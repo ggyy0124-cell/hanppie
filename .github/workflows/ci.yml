@@ -62,6 +62,21 @@ jobs:
             packages/robot-core/build/test-results/desktopTest
           if-no-files-found: warn
 
+  cpp:
+    name: C++ SDK (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build and test C++ SDK
+        run: |
+          cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build cpp/build
+          ctest --test-dir cpp/build --output-on-failure
+
   test:
     name: Python 3.10
     runs-on: ubuntu-latest
@@ -79,4 +94,6 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run pytest
+      - name: Check C++ golden vectors match the Python reference
+        run: uv run python cpp/tests/generate_golden.py | diff - cpp/tests/golden_vectors.inc
       - run: uv build
