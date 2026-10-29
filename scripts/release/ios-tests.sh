@@ -3,8 +3,9 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 mkdir -p build/ios-tests
 # Keep the installed runtime; downloading one here would hide missing runner setup.
-runtimes=$(xcrun simctl list runtimes -j)
-runtime=$(RUNTIMES="$runtimes" python3 -c 'import json,os; r=[x for x in json.loads(os.environ["RUNTIMES"])["runtimes"] if x.get("isAvailable") and x["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-") and tuple(map(int,x["version"].split("."))) >= (18,5)]; assert r,"An iOS 18.5+ simulator runtime is required"; print(max(r,key=lambda x:tuple(map(int,x["version"].split("."))))["identifier"])')
+devices=('iPhone 16' 'iPad Pro 11-inch (M4)')
+# Device-specific point releases (e.g. iOS 27.1) support only their new models; use the newest runtime that runs both.
+runtime=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; need=set(sys.argv[1:]); r=[x for x in json.load(sys.stdin)["runtimes"] if x.get("isAvailable") and x["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-") and tuple(map(int,x["version"].split("."))) >= (18,5)]; assert r,"An iOS 18.5+ simulator runtime is required"; ok=[x for x in r if need <= {t["name"] for t in x["supportedDeviceTypes"]}]; ok or sys.exit("No iOS runtime supports %s; available: %s" % (", ".join(sorted(need)), "; ".join("%s: %s" % (x["name"], ", ".join(t["name"] for t in x["supportedDeviceTypes"])) for x in r))); print(max(ok,key=lambda x:tuple(map(int,x["version"].split("."))))["identifier"])' "${devices[@]}")
 core_tested=false
 cleanup() {
   local result=$?
@@ -26,9 +27,8 @@ cleanup() {
   xcrun simctl delete "$udid" >/dev/null 2>&1 || true
   exit "$result"
 }
-# Newer runtimes drop older device types; fail with the supported names instead of simctl's bare error.
-for device in 'iPhone 17' 'iPad Pro 11-inch (M5)'; do
-  type=$(RUNTIMES="$runtimes" RUNTIME="$runtime" DEVICE="$device" python3 -c 'import json,os,sys; r=next(x for x in json.loads(os.environ["RUNTIMES"])["runtimes"] if x["identifier"]==os.environ["RUNTIME"]); t=[x for x in r["supportedDeviceTypes"] if x["name"]==os.environ["DEVICE"]]; t or sys.exit("%s is not supported by %s; supported: %s" % (os.environ["DEVICE"], r["name"], ", ".join(x["name"] for x in r["supportedDeviceTypes"]))); print(t[0]["identifier"])')
+for device in "${devices[@]}"; do
+  type=$(xcrun simctl list devicetypes -j | DEVICE="$device" python3 -c 'import json,os,sys; print(next(x["identifier"] for x in json.load(sys.stdin)["devicetypes"] if x["name"]==os.environ["DEVICE"]))')
   udid=$(xcrun simctl create "Hanppie $device" "$type" "$runtime")
   slug=$(echo "$device" | tr ' ()' '---')
   trap cleanup EXIT
