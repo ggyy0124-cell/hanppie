@@ -42,6 +42,13 @@ tasks:
     cmds:
       - '{{if eq OS "windows"}}.\gradlew.bat{{else}}./gradlew{{end}} :packages:robot-core:desktopTest :shared:jvmTest :desktopApp:classes'
 
+  cpp:test:
+    desc: Build the C++ SDK and run its offline and loopback tests
+    cmds:
+      - cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
+      - cmake --build cpp/build --config Release
+      - ctest --test-dir cpp/build -C Release --output-on-failure
+
   scene:test:
     desc: Run real GPU scene and responsive rendering tests on a graphical desktop
     env:

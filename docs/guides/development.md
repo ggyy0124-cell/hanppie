@@ -90,6 +90,10 @@ finally:
 
 仓库内的 DJI SDK fork 保留 `from robomaster import robot` 导入接口，来源见 [UPSTREAM.md](../../src/robomaster/UPSTREAM.md)。依赖约束以 [`pyproject.toml`](../../pyproject.toml) 与 [`uv.lock`](../../uv.lock) 为准。
 
+## C++
+
+`cpp/` 是 Python 直控库的 C++11 移植，使用 CMake 构建，无第三方依赖。构建、用法和与 Python 版的差异见 [C++ SDK](../../cpp/README.md)。
+
 ## 验证
 
 按修改影响面选择检查，不必每次运行全部平台：
@@ -98,6 +102,7 @@ finally:
 | --- | --- |
 | Python 格式与静态检查 | `task lint` |
 | Python 离线测试 | `task test` |
+| C++ SDK 离线与回环测试 | `task cpp:test` |
 | Kotlin 协议与共享界面 | `task kotlin:test` |
 | 桌面 GPU 场景 | `task scene:test`，需要图形桌面 |
 | Android 构建与 lint | `task android:check` |
