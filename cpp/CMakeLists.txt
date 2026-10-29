@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(hanppie VERSION 1.0.0 LANGUAGES CXX)
+# The version is maintained once, in the public header.
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/include/hanppie/hanppie.hpp" HANPPIE_VERSION_LINE
+  REGEX "^#define HANPPIE_VERSION \"[0-9]+\\.[0-9]+\\.[0-9]+\"$")
+string(REGEX REPLACE "^#define HANPPIE_VERSION \"([0-9.]+)\"$" "\\1" HANPPIE_VERSION "${HANPPIE_VERSION_LINE}")
+project(hanppie VERSION ${HANPPIE_VERSION} LANGUAGES CXX)
 
 set(HANPPIE_TOP_LEVEL OFF)
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
