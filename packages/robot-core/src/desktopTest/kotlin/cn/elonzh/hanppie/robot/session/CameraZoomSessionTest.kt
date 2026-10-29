@@ -75,12 +75,23 @@ class CameraZoomSessionTest {
                 val task = async { session.camera.setZoom(400, smooth = true) }
                 withTimeout(5_000) { while (!peer.awaitingAck) delay(5) }
                 assertFailsWith<IllegalStateException> { session.camera.setZoom(100, true) }
-                if (reenter) { if (startRemote) session.exitRemote(); session.enterRemote() } else session.halt()
                 val retiredAt = peer.frames.size
+                val transition = if (reenter) launch { if (startRemote) session.exitRemote(); session.enterRemote() } else { session.halt(); null }
+                if (transition != null) {
+                    // The first mode switch retires the task before announcing its new mode. Release the ACK there,
+                    // inside the 1.5 s request timeout, instead of after the whole remote setup sequence.
+                    val announced = (if (startRemote) Protocol.MODE_NORMAL else Protocol.MODE_REMOTE).hexBytes()
+                    withTimeout(5_000) {
+                        while (peer.frames.drop(retiredAt).none { it.receiver == Protocol.HOST_HDVT_UAV && it.set == Protocol.CMDSET_RM &&
+                            it.id == Protocol.CMD_RM_SPECIAL_CONTROL && it.payload.contentEquals(announced) }) delay(1)
+                    }
+                }
                 peer.release.set(true)
                 withTimeout(5_000) { assertFailsWith<CancellationException> { task.await() } }
+                transition?.join()
                 delay(60)
-                val following = peer.frames.drop(retiredAt).filter { it.receiver == 1 && it.set == 2 && it.id == 0x34 }
+                // Remote setup resets the zoom to 100; any other zoom write would be a step of the retired task.
+                val following = peer.frames.drop(retiredAt).filter { it.receiver == 1 && it.set == 2 && it.id == 0x34 && it.payload.u16(3) != 100 }
                 assertTrue(following.isEmpty(), "No step from the retired task may follow its delayed ACK")
                 assertTrue(peer.frames.drop(mark).any { it.receiver == 1 && it.set == 2 && it.id == 0x34 && it.payload.u16(3) in 101..399 })
                 session.camera.setZoom(100, smooth = true)
