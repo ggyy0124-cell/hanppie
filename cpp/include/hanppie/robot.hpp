@@ -70,8 +70,20 @@ struct GimbalTelemetry {
     double pitchDegrees() const { return values[3] / 10.0; }
 };
 
+// Chassis attitude from App DDS topic 13, packet-tested in robot-core
+// (telemetry/Telemetry.kt ChassisSubscriptions). Angles are degrees in -180..180.
+struct ChassisAttitude {
+    double receivedAt;
+    float yawDegrees;
+    float pitchDegrees;
+    float rollDegrees;
+};
+
 bool decodeOdometry(const protocol::DussFrame& frame, Odometry& out);
 bool decodeGimbal(const protocol::DussFrame& frame, GimbalTelemetry& out);
+bool decodeChassisAttitude(const protocol::DussFrame& frame, ChassisAttitude& out);
+// DDS add-subscription payload: subscriber node 2, one UID, periodic, no timestamp.
+Bytes buildDdsSubscriptionPayload(std::uint8_t messageId, std::uint64_t uid, std::uint16_t hz);
 
 // Encode App control-channel chassis velocity in m/s and degrees/s.
 Bytes buildChassisControlPayload(double x, double y, double z);
@@ -127,6 +139,7 @@ public:
     AppConnectionInfo info() const { return connection.info(); }
     bool odometry(Odometry& out) const;
     bool gimbalTelemetry(GimbalTelemetry& out) const;
+    bool chassisAttitude(ChassisAttitude& out) const;
 
     bool initialize(const std::string& connType = "sta", const std::string& protoType = "udp",
                     double timeoutSeconds = 20.0);
@@ -148,9 +161,17 @@ public:
     RobotAck setSpeakerVolume(int volume, double timeout = 1.0);
     RobotAck capture(double timeout = 1.0);
     void fireInfrared(double leaseSeconds = 0.12);
+    // Fire one gel bead through the S1-verified 3f:51 route (robot-core
+    // AppSession.fireGelOnce), lighting the muzzle and blaster LEDs for 400 ms.
+    // Blocks for that window.
+    void fireGel();
+    // Subscribe to the chassis attitude topic (10 Hz). Idempotent.
+    void subscribeChassisAttitude();
 
     bool waitForOdometry(Odometry& out, double after = 0.0, double timeoutSeconds = 2.0);
     bool waitForGimbal(GimbalTelemetry& out, double after = 0.0, double timeoutSeconds = 2.0);
+    bool waitForChassisAttitude(ChassisAttitude& out, double after = 0.0,
+                                double timeoutSeconds = 2.0);
 
     void requireArmed() const;
 
@@ -170,6 +191,8 @@ private:
     Odometry odometry_;
     bool hasGimbal_;
     GimbalTelemetry gimbal_;
+    bool hasAttitude_;
+    ChassisAttitude attitude_;
 };
 
 }  // namespace hanppie

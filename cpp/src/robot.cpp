@@ -32,6 +32,18 @@ const char* const IR_GUN_CONFIG =
 
 const char* const TRIGGER_CONTROL = "0000042000010840000230";
 
+// Read-only chassis attitude topic verified on the native App session; see
+// robot-core telemetry/Telemetry.kt ChassisSubscriptions.
+const std::uint8_t CHASSIS_ATTITUDE_SUBSCRIPTION_ID = 13;
+const std::uint64_t CHASSIS_ATTITUDE_SUBSCRIPTION_UID = 0x000200096B986306ULL;
+const std::uint16_t CHASSIS_ATTITUDE_SUBSCRIPTION_HZ = 10;
+
+// S1-verified gel firing LED payloads; see robot-core remote/RemoteControl.kt.
+const char* const MUZZLE_FIRE_LED_ON = "40000000ff0001ffffff6401000100";
+const char* const MUZZLE_FIRE_LED_OFF = "40000000ff0000ffffff6401000100";
+const char* const BLASTER_LED_ON = "71ffffff0164006400";
+const char* const BLASTER_LED_OFF = "70ffffff0164006400";
+
 void sleepSeconds(double seconds) {
     std::this_thread::sleep_for(std::chrono::microseconds(static_cast<long long>(seconds * 1e6)));
 }
@@ -283,6 +295,36 @@ bool decodeGimbal(const DussFrame& frame, GimbalTelemetry& out) {
     return true;
 }
 
+bool decodeChassisAttitude(const DussFrame& frame, ChassisAttitude& out) {
+    if (!frame.valid || frame.cmdset != CMDSET_VIRTUAL_BUS ||
+        frame.cmdid != CMD_VBUS_DATA_ANALYSIS || frame.payload.size() != 14 ||
+        frame.payload[0] != 0 || frame.payload[1] != CHASSIS_ATTITUDE_SUBSCRIPTION_ID) {
+        return false;
+    }
+    float angles[3];
+    for (int i = 0; i < 3; ++i) {
+        angles[i] = readFloatLe(frame.payload, 2 + i * 4);
+        if (!(angles[i] >= -180.0f && angles[i] <= 180.0f)) return false;
+    }
+    out.receivedAt = monotonicSeconds();
+    out.yawDegrees = angles[0];
+    out.pitchDegrees = angles[1];
+    out.rollDegrees = angles[2];
+    return true;
+}
+
+Bytes buildDdsSubscriptionPayload(std::uint8_t messageId, std::uint64_t uid, std::uint16_t hz) {
+    Bytes out;
+    out.push_back(2);
+    out.push_back(messageId);
+    out.push_back(0);
+    out.push_back(0);
+    out.push_back(1);
+    appendLe(out, uid, 8);
+    appendLe(out, hz, 2);
+    return out;
+}
+
 Bytes buildChassisControlPayload(double x, double y, double z) {
     x = clamp(x, -1.0, 1.0);
     y = clamp(y, -1.0, 1.0);
@@ -386,7 +428,8 @@ Robot::Robot(const std::string& robotIp, const std::string& appid, const std::st
       controlMode_(false),
       armed_(false),
       hasOdometry_(false),
-      hasGimbal_(false) {
+      hasGimbal_(false),
+      hasAttitude_(false) {
     connection.onDuss([this](const DussFrame& frame) { handleDuss(frame); });
 }
 
@@ -408,6 +451,13 @@ bool Robot::gimbalTelemetry(GimbalTelemetry& out) const {
     std::lock_guard<std::mutex> lock(telemetryLock_);
     if (!hasGimbal_) return false;
     out = gimbal_;
+    return true;
+}
+
+bool Robot::chassisAttitude(ChassisAttitude& out) const {
+    std::lock_guard<std::mutex> lock(telemetryLock_);
+    if (!hasAttitude_) return false;
+    out = attitude_;
     return true;
 }
 
@@ -540,6 +590,47 @@ void Robot::fireInfrared(double leaseSeconds) {
     connection.setControlPayload(fromHex(TRIGGER_CONTROL), leaseSeconds);
 }
 
+void Robot::fireGel() {
+    requireArmed();
+    if (!controlMode_) throw std::runtime_error("gel firing requires control mode");
+    connection.sendDuss(HOST_MOBILE, HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_LED_COLOR_SET,
+                        fromHex(MUZZLE_FIRE_LED_ON));
+    connection.sendDuss(HOST_MOBILE, HOST_GUN, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_GUN_LED_SET,
+                        fromHex(BLASTER_LED_ON));
+    connection.sendDuss(HOST_MOBILE, HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SHOOT_CMD,
+                        Bytes(1, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    if (!connected()) return;
+    connection.sendDuss(HOST_MOBILE, HOST_GUN, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_GUN_LED_SET,
+                        fromHex(BLASTER_LED_OFF));
+    connection.sendDuss(HOST_MOBILE, HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_LED_COLOR_SET,
+                        fromHex(MUZZLE_FIRE_LED_OFF));
+}
+
+void Robot::subscribeChassisAttitude() {
+    if (!connected()) throw std::runtime_error("App connection is not initialized");
+    Bytes remove;
+    remove.push_back(0);
+    remove.push_back(2);
+    remove.push_back(CHASSIS_ATTITUDE_SUBSCRIPTION_ID);
+    connection.sendDuss(HOST_MOBILE, HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_VIRTUAL_BUS,
+                        CMD_VBUS_DEL_MSG, remove);
+    connection.sendDuss(HOST_MOBILE, HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_VIRTUAL_BUS,
+                        CMD_VBUS_ADD_MSG,
+                        buildDdsSubscriptionPayload(CHASSIS_ATTITUDE_SUBSCRIPTION_ID,
+                                                    CHASSIS_ATTITUDE_SUBSCRIPTION_UID,
+                                                    CHASSIS_ATTITUDE_SUBSCRIPTION_HZ));
+}
+
+bool Robot::waitForChassisAttitude(ChassisAttitude& out, double after, double timeoutSeconds) {
+    std::unique_lock<std::mutex> lock(telemetryLock_);
+    bool ready = telemetryCondition_.wait_for(
+        lock, std::chrono::duration<double>(timeoutSeconds > 0 ? timeoutSeconds : 0),
+        [this, after] { return hasAttitude_ && attitude_.receivedAt > after; });
+    if (ready) out = attitude_;
+    return ready;
+}
+
 bool Robot::waitForOdometry(Odometry& out, double after, double timeoutSeconds) {
     std::unique_lock<std::mutex> lock(telemetryLock_);
     bool ready = telemetryCondition_.wait_for(
@@ -582,6 +673,7 @@ std::vector<std::uint16_t> Robot::sendSetup(const std::vector<SetupEntry>& entri
 void Robot::handleDuss(const DussFrame& frame) {
     Odometry odometry;
     GimbalTelemetry gimbal;
+    ChassisAttitude attitude;
     if (decodeOdometry(frame, odometry)) {
         std::lock_guard<std::mutex> lock(telemetryLock_);
         odometry_ = odometry;
@@ -591,6 +683,11 @@ void Robot::handleDuss(const DussFrame& frame) {
         std::lock_guard<std::mutex> lock(telemetryLock_);
         gimbal_ = gimbal;
         hasGimbal_ = true;
+        telemetryCondition_.notify_all();
+    } else if (decodeChassisAttitude(frame, attitude)) {
+        std::lock_guard<std::mutex> lock(telemetryLock_);
+        attitude_ = attitude;
+        hasAttitude_ = true;
         telemetryCondition_.notify_all();
     }
 }

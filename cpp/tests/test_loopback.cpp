@@ -4,6 +4,7 @@
 // Requires the fixed App ports (45678, 56789, 10607, 10609) to be free.
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -444,4 +445,152 @@ TEST(lab_upload_uses_anonymous_binary_passive_ftp) {
     CHECK_EQ(commands[3], std::string("TYPE I"));
     CHECK_EQ(commands[4], std::string("PASV"));
     CHECK_EQ(commands[5], std::string("STOR python_raw.dsp"));
+}
+
+namespace {
+
+// Kinematic stand-in for the robot: integrates the gimbal speed and chassis
+// rotation commands the SDK sends and pushes 10 Hz telemetry back, like S1.
+class MotionSimulator {
+public:
+    MotionSimulator(FakeRobot& fake, double chassisYaw)
+        : fake_(fake), done_(false), cursor_(fake.mark()), yaw_(0), pitch_(0),
+          chassisYaw_(chassisYaw), yawSpeed_(0), pitchSpeed_(0), chassisRate_(0) {
+        thread_ = std::thread(&MotionSimulator::run, this);
+    }
+    ~MotionSimulator() {
+        done_ = true;
+        thread_.join();
+    }
+    void angles(double& yaw, double& pitch, double& chassisYaw) {
+        std::lock_guard<std::mutex> lock(lock_);
+        yaw = yaw_;
+        pitch = pitch_;
+        chassisYaw = chassisYaw_;
+    }
+
+private:
+    static double int16At(const Bytes& data, std::size_t offset) {
+        return static_cast<std::int16_t>(data[offset] | (data[offset + 1] << 8));
+    }
+
+    void observe(const std::vector<Captured>& items) {
+        bool sawGimbal = false;
+        for (std::size_t i = 0; i < items.size(); ++i) {
+            const DussFrame& f = items[i].frame;
+            if (f.cmdset == CMDSET_GIMBAL && f.cmdid == CMD_GIMBAL_ROTATE_SPEED &&
+                f.payload.size() == 6) {
+                pitchSpeed_ = -int16At(f.payload, 2) / 1024.0 * 120.0;
+                yawSpeed_ = -int16At(f.payload, 4) / 1024.0 * 120.0;
+                sawGimbal = true;
+            } else if (items[i].type == 0x04 && f.payload.size() == 14) {
+                int angular = (f.payload[5] >> 4) | (f.payload[6] << 4);
+                if (angular & 0x800) angular -= 0x1000;
+                chassisRate_ = angular / 256.0 * 150.0;
+            }
+        }
+        // Periodic gimbal commands stop when their lease expires.
+        if (!sawGimbal) yawSpeed_ = pitchSpeed_ = 0;
+    }
+
+    void run() {
+        while (!done_) {
+            sleepMs(100);
+            std::vector<Captured> items = fake_.since(cursor_);
+            cursor_ += items.size();
+            Bytes gimbal(2, 0);
+            Bytes attitude(2, 0);
+            {
+                std::lock_guard<std::mutex> lock(lock_);
+                observe(items);
+                yaw_ += yawSpeed_ * 0.1;
+                pitch_ += pitchSpeed_ * 0.1;
+                chassisYaw_ += chassisRate_ * 0.1;
+                if (chassisYaw_ > 180) chassisYaw_ -= 360;
+                if (chassisYaw_ <= -180) chassisYaw_ += 360;
+                gimbal[1] = 0x0A;
+                std::int16_t values[4] = {0, 0, static_cast<std::int16_t>(yaw_ * 10),
+                                          static_cast<std::int16_t>(pitch_ * 10)};
+                for (int v = 0; v < 4; ++v) {
+                    gimbal.push_back(static_cast<std::uint8_t>(values[v] & 0xFF));
+                    gimbal.push_back(static_cast<std::uint8_t>((values[v] >> 8) & 0xFF));
+                }
+                gimbal.push_back(0);
+                attitude[1] = 13;
+                float angles[3] = {static_cast<float>(chassisYaw_), 0.0f, 0.0f};
+                for (int a = 0; a < 3; ++a) {
+                    std::uint32_t bits;
+                    std::memcpy(&bits, &angles[a], sizeof(bits));
+                    for (int b = 0; b < 4; ++b) attitude.push_back((bits >> (8 * b)) & 0xFF);
+                }
+            }
+            fake_.push(ATTR_NO_ACK, CMDSET_VIRTUAL_BUS, CMD_VBUS_DATA_ANALYSIS, gimbal);
+            fake_.push(ATTR_NO_ACK, CMDSET_VIRTUAL_BUS, CMD_VBUS_DATA_ANALYSIS, attitude);
+        }
+    }
+
+    FakeRobot& fake_;
+    std::atomic<bool> done_;
+    std::size_t cursor_;
+    std::mutex lock_;
+    double yaw_, pitch_, chassisYaw_;
+    double yawSpeed_, pitchSpeed_, chassisRate_;
+    std::thread thread_;
+};
+
+bool sawDuss(const std::vector<Captured>& items, std::uint8_t cmdset, std::uint8_t cmdid,
+             const Bytes& payload) {
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        const DussFrame& f = items[i].frame;
+        if (f.cmdset == cmdset && f.cmdid == cmdid && f.payload == payload) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST(lab_style_ctrl_closes_angle_loops_on_telemetry) {
+    FakeRobot fake;
+    fake.ack(CMDSET_RM, CMD_RM_LED_COLOR_SET, Bytes(1, 0));
+    Robot robot("127.0.0.1", APPID);
+    robot.connection.suspendIdleKeepalive = true;
+    CHECK(robot.initialize("sta", "udp", 5.0));
+    // Start near the +/-180 wrap so the chassis loop must unwrap yaw.
+    MotionSimulator sim(fake, 170.0);
+    double yaw, pitch, chassisYaw;
+    {
+        std::size_t mark = fake.mark();
+        ctrl::RobotCtrl rm(robot);
+        CHECK(robot.controlMode());
+        CHECK(robot.armed());
+        sleepMs(100);
+        CHECK(sawDuss(fake.since(mark), CMDSET_VIRTUAL_BUS, CMD_VBUS_ADD_MSG,
+                      buildDdsSubscriptionPayload(13, 0x000200096B986306ULL, 10)));
+
+        rm.gimbal_ctrl.angle_ctrl(20, 10);
+        sim.angles(yaw, pitch, chassisYaw);
+        CHECK(std::fabs(yaw - 20) < 1.5);
+        CHECK(std::fabs(pitch - 10) < 1.5);
+        CHECK(std::fabs(rm.gimbal_ctrl.get_axis_angle(ctrl::rm_define::gimbal_axis_yaw) - 20) < 1.5);
+
+        rm.chassis_ctrl.set_rotate_speed(60);
+        rm.chassis_ctrl.rotate_with_degree(ctrl::rm_define::clockwise, 90);
+        sleepMs(200);
+        sim.angles(yaw, pitch, chassisYaw);
+        CHECK(std::fabs(ctrl::angleDifference(chassisYaw, 260)) < 3.0);
+
+        rm.gimbal_ctrl.recenter();
+        sim.angles(yaw, pitch, chassisYaw);
+        CHECK(std::fabs(yaw) < 1.5);
+        CHECK(std::fabs(pitch) < 1.5);
+
+        std::size_t ledMark = fake.mark();
+        rm.led_ctrl.set_top_led(ctrl::rm_define::armor_all, 255, 0, 0,
+                                ctrl::rm_define::effect_always_on);
+        CHECK(sawDuss(fake.since(ledMark), CMDSET_RM, CMD_RM_LED_COLOR_SET,
+                      buildLedPayload(0x30, 255, 0, 0, "on")));
+        CHECK_THROWS(rm.chassis_ctrl.move_with_distance(0, 6), std::invalid_argument);
+    }
+    CHECK(!robot.controlMode());
+    CHECK(!robot.armed());
 }

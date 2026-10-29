@@ -3,6 +3,7 @@
 #define HANPPIE_HANPPIE_HPP
 
 #include "hanppie/connection.hpp"
+#include "hanppie/ctrl.hpp"
 #include "hanppie/lab.hpp"
 #include "hanppie/media.hpp"
 #include "hanppie/product.hpp"

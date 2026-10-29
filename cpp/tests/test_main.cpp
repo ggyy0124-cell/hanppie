@@ -1,6 +1,7 @@
 // Offline unit tests for the Hanppie C++ SDK. Vectors either mirror tests/ in
 // the Python package or come from golden_vectors.inc generated from it.
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <set>
 #include <cstring>
@@ -400,3 +401,41 @@ TEST(build_lab_program_generates_valid_python_dsp) {
 }
 
 int main() { return test::runAll(); }
+
+TEST(lab_style_ctrl_helpers) {
+    CHECK_EQ(ctrl::approachRate(0.5, 30), 0.0);
+    CHECK_EQ(ctrl::approachRate(5, 30), 15.0);
+    CHECK_EQ(ctrl::approachRate(-100, 30), -30.0);
+    CHECK(std::fabs(ctrl::approachRate(1.2, 30) - 3.6) < 1e-9);
+    CHECK_EQ(ctrl::approachRate(1.1, 30) > 0, true);
+    CHECK_EQ(ctrl::angleDifference(-170, 170), 20.0);
+    CHECK_EQ(ctrl::angleDifference(170, -170), -20.0);
+    CHECK_EQ(ctrl::angleDifference(180, 0), 180.0);
+    std::pair<double, double> forward = ctrl::directionVelocity(0, 0.5);
+    CHECK_EQ(forward.first, 0.5);
+    CHECK(std::fabs(forward.second) < 1e-12);
+    std::pair<double, double> right = ctrl::directionVelocity(90, 0.5);
+    CHECK(std::fabs(right.first) < 1e-12);
+    CHECK(std::fabs(right.second - 0.5) < 1e-12);
+}
+
+TEST(chassis_attitude_topic_matches_robot_core) {
+    // robot-core ChassisSubscriptions.addPayload(13, 0x000200096b986306).
+    CHECK_EQ(toHex(buildDdsSubscriptionPayload(13, 0x000200096B986306ULL, 10)),
+             std::string("020d0000010663986b090002000a00"));
+    DussFrame frame;
+    frame.valid = true;
+    frame.cmdset = CMDSET_VIRTUAL_BUS;
+    frame.cmdid = CMD_VBUS_DATA_ANALYSIS;
+    // yaw 90.0, pitch -1.5, roll 0.25 as little-endian floats.
+    frame.payload = fromHex("000d" "0000b442" "0000c0bf" "0000803e");
+    ChassisAttitude attitude;
+    CHECK(decodeChassisAttitude(frame, attitude));
+    CHECK_EQ(attitude.yawDegrees, 90.0f);
+    CHECK_EQ(attitude.pitchDegrees, -1.5f);
+    CHECK_EQ(attitude.rollDegrees, 0.25f);
+    frame.payload = fromHex("000d" "00004843" "00000000" "00000000");  // yaw 200 is out of range
+    CHECK(!decodeChassisAttitude(frame, attitude));
+    frame.payload[1] = 14;
+    CHECK(!decodeChassisAttitude(frame, attitude));
+}

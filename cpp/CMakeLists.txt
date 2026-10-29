@@ -14,6 +14,7 @@ find_package(Threads REQUIRED)
 
 add_library(hanppie
   src/connection.cpp
+  src/ctrl.cpp
   src/lab.cpp
   src/md5.cpp
   src/media.cpp
