@@ -1634,11 +1634,8 @@ log_ctrl.print_msg("Beck: Because it's Friday night!")"""
             rule.runOnIdle { width.value = 1040.dp; height.value = 760.dp }
             rule.waitForIdle()
             rule.onNodeWithTag("script-console").assertIsDisplayed()
-            for (label in listOf("拍照", "开始录像")) {
-                rule.onNodeWithContentDescription(label).assertIsNotEnabled()
-                    .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
-                    .assert(SemanticsMatcher.keyNotDefined(androidx.compose.ui.semantics.SemanticsActions.OnClick))
-            }
+            // Capture actions belong to the cockpit HUD, not to the script monitor video.
+            for (label in listOf("拍照", "开始录像")) rule.onNodeWithContentDescription(label).assertDoesNotExist()
             rule.onNodeWithText("Sentry scan 2/3: left").assertIsDisplayed()
             snapshot("active-script-run-desktop")
             rule.runOnIdle { width.value = 740.dp; height.value = 393.dp }
