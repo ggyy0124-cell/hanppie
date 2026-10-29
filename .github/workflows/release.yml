@@ -20,6 +20,8 @@ on:
   push:
     tags:
       - 'v*'
+      # App releases are plain vX.Y.Z; suffixed tags such as v1.0.0-0.0.1 are C++ SDK releases.
+      - '!v*-*'
 
 permissions:
   contents: write
