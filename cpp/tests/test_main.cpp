@@ -439,3 +439,115 @@ TEST(chassis_attitude_topic_matches_robot_core) {
     frame.payload[1] = 14;
     CHECK(!decodeChassisAttitude(frame, attitude));
 }
+
+namespace {
+
+void appendFloat(Bytes& out, float value) {
+    std::uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<std::uint8_t>(bits >> (8 * i)));
+}
+
+// Mirrors VisionControlTest.report in robot-core.
+DussFrame visionPush(int type, std::uint32_t info, float x = 0.5f, float y = 0.25f) {
+    DussFrame frame;
+    frame.valid = true;
+    frame.sender = HOST_VISION;
+    frame.receiver = HOST_MOBILE;
+    frame.attr = ATTR_NO_ACK;
+    frame.cmdset = CMDSET_VISION;
+    frame.cmdid = 0xA4;
+    frame.payload = fromHex("050300000000000001");
+    frame.payload[0] = static_cast<std::uint8_t>(type);
+    appendFloat(frame.payload, x);
+    appendFloat(frame.payload, y);
+    appendFloat(frame.payload, 0.2f);
+    appendFloat(frame.payload, 0.4f);
+    for (int i = 0; i < 4; ++i) frame.payload.push_back(static_cast<std::uint8_t>(info >> (8 * i)));
+    return frame;
+}
+
+}  // namespace
+
+TEST(vision_protocol_matches_robot_core) {
+    CHECK_EQ(toHex(buildVisionEnablePayload(visionModeMask(VisionMode::Markers))), std::string("2000"));
+    CHECK_EQ(toHex(buildVisionEnablePayload(visionModeMask(VisionMode::Pose))), std::string("0400"));
+    CHECK_EQ(toHex(buildVisionColorPayload(VisionMode::Lines, VisionColor::Blue)), std::string("0103"));
+    CHECK_EQ(toHex(buildVisionColorPayload(VisionMode::Markers, VisionColor::Red)), std::string("0201"));
+    CHECK_THROWS(buildVisionColorPayload(VisionMode::People, VisionColor::Red), std::invalid_argument);
+
+    VisionReport report;
+    CHECK(decodeVisionPush(visionPush(5, 0x803A002Du), report));
+    CHECK_EQ(report.type, 5);
+    CHECK_EQ(report.status, 3);
+    CHECK_EQ(report.rectangles.size(), 1u);
+    CHECK_EQ(report.rectangles[0].markerId(), 45);
+    CHECK_EQ(report.rectangles[0].markerDistanceCentimetres(), 0x803A);
+    CHECK_EQ(report.rectangles[0].x, 0.5f);
+
+    // Line points keep tangent and curvature, which may leave the unit range.
+    DussFrame line = visionPush(4, 7);
+    std::memcpy(&line.payload[9 + 12], "\x00\x00\x00\x40", 4);  // curvature 2.0
+    CHECK(decodeVisionPush(line, report));
+    CHECK_EQ(report.linePoints.size(), 1u);
+    CHECK_EQ(report.linePoints[0].curvature, 2.0f);
+    CHECK(report.rectangles.empty());
+
+    DussFrame bad = visionPush(5, 11);
+    bad.sender = HOST_HDVT_UAV;
+    CHECK(!decodeVisionPush(bad, report));
+    bad = visionPush(5, 11);
+    bad.payload.push_back(0);
+    CHECK(!decodeVisionPush(bad, report));
+    CHECK(!decodeVisionPush(visionPush(7, 11), report));
+    CHECK(!decodeVisionPush(visionPush(5, 11, 1.5f), report));
+}
+
+TEST(camera_status_matches_robot_core) {
+    // CameraCaptureProtocolTest.frame: relayed by HDVT, inserted card, video mode, recording.
+    DussFrame frame;
+    frame.valid = true;
+    frame.sender = HOST_HDVT_UAV;
+    frame.receiver = HOST_MOBILE;
+    frame.attr = ATTR_NO_ACK;
+    frame.cmdset = CMDSET_CAMERA;
+    frame.cmdid = 0xE4;
+    frame.payload = Bytes(44, 0);
+    frame.payload[2] = 0x10;
+    putLe16(frame.payload, 5, 0x1000 | 0xC0 | 1);
+    putLe16(frame.payload, 3, 12);
+    CameraStatus status;
+    CHECK(decodeCameraStatus(frame, status));
+    CHECK(status.cardInserted);
+    CHECK(status.recording);
+    CHECK(!status.shooting);
+    CHECK_EQ(status.workMode, 1);
+    CHECK_EQ(status.recordingSeconds, 12);
+    CHECK(!status.canCapture());  // busy recording
+    putLe16(frame.payload, 5, 0xC0);
+    frame.payload[2] = 0x10 | 8;
+    CHECK(decodeCameraStatus(frame, status));
+    CHECK(status.full());
+    CHECK(!status.canCapture());
+    frame.payload[2] = 0x10;
+    CHECK(decodeCameraStatus(frame, status));
+    CHECK(status.canCapture());
+    frame.payload.resize(25);
+    CHECK(!decodeCameraStatus(frame, status));
+}
+
+TEST(lab_style_vision_helpers) {
+    using namespace ctrl;
+    CHECK(markerMatches(rm_define::marker_trans_red_heart, rm_define::marker_trans_red_heart));
+    CHECK(!markerMatches(rm_define::marker_trans_dice, rm_define::marker_trans_red_heart));
+    CHECK(markerMatches(rm_define::marker_trans_left, rm_define::marker_trans_all));
+    CHECK(!markerMatches(rm_define::marker_trans_red_heart, rm_define::marker_trans_all));
+    CHECK(markerMatches(rm_define::marker_number_zero + 7, rm_define::marker_number_all));
+    CHECK(markerMatches(rm_define::marker_letter_Z, rm_define::marker_letter_all));
+    CHECK(markerMatches(rm_define::marker_trans_sword, rm_define::marker_all));
+    std::pair<double, double> offset = aimOffset(0.75, 0.53);
+    CHECK(std::fabs(offset.first - 24.0) < 1e-9);
+    CHECK(std::fabs(offset.second) < 1e-9);
+    offset = aimOffset(0.5, 0.33);
+    CHECK(std::fabs(offset.second - 10.8) < 1e-9);  // target above the aim point: pitch up
+}

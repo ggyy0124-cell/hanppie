@@ -6,6 +6,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -14,6 +15,7 @@
 #include "hanppie/connection.hpp"
 #include "hanppie/media.hpp"
 #include "hanppie/protocol.hpp"
+#include "hanppie/vision.hpp"
 
 namespace hanppie {
 
@@ -79,6 +81,27 @@ struct ChassisAttitude {
     float rollDegrees;
 };
 
+// Camera simple status push 02:e4, relayed by the HDVT node on S1; field layout
+// from robot-core media/CameraStorageStatus.kt (S1 live-verified 2026-10-25).
+struct CameraStatus {
+    double receivedAt;
+    int workMode;  // 0 photo, 1 video
+    bool cardInserted;
+    int cardState;  // 5 formatting, 8 full, 2/3/4/6/10/11 error
+    bool recording;
+    bool shooting;
+    int recordingSeconds;
+
+    bool formatting() const { return cardState == 5; }
+    bool full() const { return cardState == 8; }
+    bool cardError() const;
+    bool canCapture() const {
+        return cardInserted && !formatting() && !recording && !shooting && !full() && !cardError();
+    }
+};
+
+bool decodeCameraStatus(const protocol::DussFrame& frame, CameraStatus& out);
+
 bool decodeOdometry(const protocol::DussFrame& frame, Odometry& out);
 bool decodeGimbal(const protocol::DussFrame& frame, GimbalTelemetry& out);
 bool decodeChassisAttitude(const protocol::DussFrame& frame, ChassisAttitude& out);
@@ -131,6 +154,7 @@ public:
     media::Audio audio;
     Chassis chassis;
     Gimbal gimbal;
+    Vision vision;
 
     bool connected() const { return connection.connected(); }
     bool controlMode() const { return controlMode_; }
@@ -140,6 +164,7 @@ public:
     bool odometry(Odometry& out) const;
     bool gimbalTelemetry(GimbalTelemetry& out) const;
     bool chassisAttitude(ChassisAttitude& out) const;
+    bool cameraStatus(CameraStatus& out) const;
 
     bool initialize(const std::string& connType = "sta", const std::string& protoType = "udp",
                     double timeoutSeconds = 20.0);
@@ -159,7 +184,14 @@ public:
     RobotAck setMuzzleLed(bool fire, bool enabled, double timeout = 1.0);
     RobotAck playSound(std::uint32_t soundId, double timeout = 1.0);
     RobotAck setSpeakerVolume(int volume, double timeout = 1.0);
+    // Take a photo to the SD card, switching the camera to photo mode first
+    // when the latest camera status reports video mode.
     RobotAck capture(double timeout = 1.0);
+    // Start or stop SD card video recording (robot-core CameraCommands.setRecording).
+    // Starting needs a fresh camera status with a usable card, switches to video
+    // mode, and waits for the status to report recording; stopping waits for it
+    // to clear. Throws std::runtime_error when the card or status does not allow it.
+    void setRecording(bool active);
     void fireInfrared(double leaseSeconds = 0.12);
     // Fire one gel bead through the S1-verified 3f:51 route (robot-core
     // AppSession.fireGelOnce), lighting the muzzle and blaster LEDs for 400 ms.
@@ -172,6 +204,7 @@ public:
     bool waitForGimbal(GimbalTelemetry& out, double after = 0.0, double timeoutSeconds = 2.0);
     bool waitForChassisAttitude(ChassisAttitude& out, double after = 0.0,
                                 double timeoutSeconds = 2.0);
+    bool waitForCameraStatus(CameraStatus& out, double after = 0.0, double timeoutSeconds = 1.5);
 
     void requireArmed() const;
 
@@ -182,6 +215,9 @@ private:
     std::vector<std::uint16_t> sendSetup(const std::vector<protocol::SetupEntry>& entries,
                                          bool includeFlags);
     void handleDuss(const protocol::DussFrame& frame);
+    CameraStatus freshCameraStatus() const;
+    void setCameraMode(int mode);
+    bool awaitCameraStatus(double after, const std::function<bool(const CameraStatus&)>& matches);
 
     std::atomic<bool> controlMode_;
     std::atomic<bool> armed_;
@@ -193,6 +229,8 @@ private:
     GimbalTelemetry gimbal_;
     bool hasAttitude_;
     ChassisAttitude attitude_;
+    bool hasCameraStatus_;
+    CameraStatus cameraStatus_;
 };
 
 }  // namespace hanppie

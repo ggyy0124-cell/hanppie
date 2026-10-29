@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -83,6 +84,13 @@ public:
         acks_[std::make_pair(cmdset, cmdid)] = payload;
     }
 
+    // Stateful ACKs: return true and fill payload to answer a request.
+    typedef std::function<bool(const DussFrame&, Bytes&)> Responder;
+    void respond(const Responder& responder) {
+        std::lock_guard<std::mutex> lock(lock_);
+        responder_ = responder;
+    }
+
     // Index of the next captured frame, after letting in-flight packets land.
     std::size_t mark() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -97,10 +105,14 @@ public:
 
     // Send a DUSS frame inside a 20-byte direct header for the active session.
     void push(std::uint8_t attr, std::uint8_t cmdset, std::uint8_t cmdid, const Bytes& payload) {
-        Bytes duss = buildDuss(HOST_HDVT_UAV, HOST_MOBILE, attr, cmdset, cmdid, payload,
-                               sequence_++);
-        Bytes packet(20, 0);
+        pushFrom(HOST_HDVT_UAV, attr, cmdset, cmdid, payload);
+    }
+
+    void pushFrom(std::uint8_t sender, std::uint8_t attr, std::uint8_t cmdset, std::uint8_t cmdid,
+                  const Bytes& payload) {
         std::lock_guard<std::mutex> lock(lock_);
+        Bytes duss = buildDuss(sender, HOST_MOBILE, attr, cmdset, cmdid, payload, sequence_++);
+        Bytes packet(20, 0);
         packet[2] = session_[0];
         packet[3] = session_[1];
         packet[6] = 0x09;
@@ -178,9 +190,15 @@ private:
                 captured_.push_back(item);
                 std::map<std::pair<std::uint8_t, std::uint8_t>, Bytes>::const_iterator found =
                     acks_.find(std::make_pair(frames[i].cmdset, frames[i].cmdid));
-                if ((frames[i].attr & 0x40) && found != acks_.end()) {
+                Bytes answer;
+                bool answered = (frames[i].attr & 0x40) && responder_ && responder_(frames[i], answer);
+                if (!answered && (frames[i].attr & 0x40) && found != acks_.end()) {
+                    answer = found->second;
+                    answered = true;
+                }
+                if (answered) {
                     Bytes duss = buildDuss(frames[i].receiver, frames[i].sender, ATTR_ACK,
-                                           frames[i].cmdset, frames[i].cmdid, found->second,
+                                           frames[i].cmdset, frames[i].cmdid, answer,
                                            frames[i].sequence);
                     Bytes reply(20, 0);
                     reply[2] = session_[0];
@@ -205,6 +223,7 @@ private:
     Bytes session_;
     std::vector<Captured> captured_;
     std::map<std::pair<std::uint8_t, std::uint8_t>, Bytes> acks_;
+    Responder responder_;
 };
 
 void sleepMs(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
@@ -593,4 +612,213 @@ TEST(lab_style_ctrl_closes_angle_loops_on_telemetry) {
     }
     CHECK(!robot.controlMode());
     CHECK(!robot.armed());
+}
+
+namespace {
+
+void appendFloatLe(Bytes& out, float value) {
+    std::uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<std::uint8_t>(bits >> (8 * i)));
+}
+
+// Robot-side vision and camera: answers enable/read-back and camera commands,
+// and every 100 ms pushes camera status plus, while markers are enabled, one
+// marker whose frame position follows the simulated gimbal.
+class VisionSimulator {
+public:
+    VisionSimulator(FakeRobot& fake, MotionSimulator& motion)
+        : fake_(fake), motion_(motion), done_(false), mask_(0), otherOwner_(false), mode_(0),
+          recording_(false), markerId_(ctrl::rm_define::marker_trans_red_heart),
+          markerYaw_(15.0), markerPitch_(8.0) {
+        fake_.respond([this](const DussFrame& f, Bytes& answer) { return answer_(f, answer); });
+        thread_ = std::thread(&VisionSimulator::run, this);
+    }
+    ~VisionSimulator() {
+        done_ = true;
+        thread_.join();
+        fake_.respond(FakeRobot::Responder());
+    }
+    void setOtherOwner(bool value) {
+        std::lock_guard<std::mutex> lock(lock_);
+        otherOwner_ = value;
+    }
+    void setMarker(int id) {
+        std::lock_guard<std::mutex> lock(lock_);
+        markerId_ = id;
+    }
+    std::uint16_t mask() {
+        std::lock_guard<std::mutex> lock(lock_);
+        return mask_;
+    }
+    bool recording() {
+        std::lock_guard<std::mutex> lock(lock_);
+        return recording_;
+    }
+
+private:
+    bool answer_(const DussFrame& f, Bytes& answer) {
+        std::lock_guard<std::mutex> lock(lock_);
+        if (f.cmdset == CMDSET_VISION && f.cmdid == 0xA5) {
+            std::uint16_t reported = otherOwner_ ? 0x40 : mask_;
+            answer = Bytes(1, 0);
+            answer.push_back(static_cast<std::uint8_t>(reported & 0xFF));
+            answer.push_back(static_cast<std::uint8_t>(reported >> 8));
+            return true;
+        }
+        if (f.cmdset == CMDSET_VISION && f.cmdid == 0xA3 && f.payload.size() == 2) {
+            mask_ = static_cast<std::uint16_t>(f.payload[0] | (f.payload[1] << 8));
+            answer = Bytes(1, 0);
+            return true;
+        }
+        if (f.cmdset == CMDSET_CAMERA && f.cmdid == 0x10 && f.payload.size() == 1) {
+            mode_ = f.payload[0];
+            answer = Bytes(1, 0);
+            return true;
+        }
+        if (f.cmdset == CMDSET_CAMERA && f.cmdid == 0x02 && f.payload.size() == 1) {
+            recording_ = mode_ == 1 && f.payload[0] == 1;
+            answer = Bytes(1, 0);
+            return true;
+        }
+        return false;
+    }
+
+    void run() {
+        while (!done_) {
+            sleepMs(100);
+            double yaw, pitch, chassisYaw;
+            motion_.angles(yaw, pitch, chassisYaw);
+            Bytes camera(44, 0);
+            Bytes marker;
+            {
+                std::lock_guard<std::mutex> lock(lock_);
+                camera[2] = 0x10;
+                unsigned flags = 0xC0 | mode_ | (recording_ ? 0x1000 : 0);
+                camera[5] = static_cast<std::uint8_t>(flags & 0xFF);
+                camera[6] = static_cast<std::uint8_t>(flags >> 8);
+                double x = 0.5 + (markerYaw_ - yaw) / 96.0;
+                double y = 0.53 - (markerPitch_ - pitch) / 54.0;
+                if (mask_ == 0x20 && x > 0 && x < 1 && y > 0 && y < 1) {
+                    marker = fromHex("050300000000000001");
+                    appendFloatLe(marker, static_cast<float>(x));
+                    appendFloatLe(marker, static_cast<float>(y));
+                    appendFloatLe(marker, 0.1f);
+                    appendFloatLe(marker, 0.15f);
+                    std::uint32_t info = static_cast<std::uint32_t>(markerId_) | (120u << 16);
+                    for (int i = 0; i < 4; ++i) marker.push_back(static_cast<std::uint8_t>(info >> (8 * i)));
+                }
+            }
+            fake_.pushFrom(HOST_HDVT_UAV, ATTR_NO_ACK, CMDSET_CAMERA, 0xE4, camera);
+            if (!marker.empty()) fake_.pushFrom(HOST_VISION, ATTR_NO_ACK, CMDSET_VISION, 0xA4, marker);
+        }
+    }
+
+    FakeRobot& fake_;
+    MotionSimulator& motion_;
+    std::atomic<bool> done_;
+    std::mutex lock_;
+    std::uint16_t mask_;
+    bool otherOwner_;
+    std::uint8_t mode_;
+    bool recording_;
+    int markerId_;
+    double markerYaw_, markerPitch_;
+    std::thread thread_;
+};
+
+std::vector<std::string> visionCommands(const std::vector<Captured>& items) {
+    std::vector<std::string> out;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        const DussFrame& f = items[i].frame;
+        if (f.cmdset == CMDSET_VISION) out.push_back(toHex(Bytes(1, f.cmdid)) + ":" + toHex(f.payload));
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST(lab_style_vision_and_recording_over_loopback) {
+    using namespace ctrl;
+    FakeRobot fake;
+    Robot robot("127.0.0.1", APPID);
+    robot.connection.suspendIdleKeepalive = true;
+    CHECK(robot.initialize("sta", "udp", 5.0));
+    MotionSimulator motion(fake, 0.0);
+    VisionSimulator sim(fake, motion);
+    {
+        RobotCtrl rm(robot);
+        CHECK_THROWS(rm.vision_ctrl.get_marker_detection_info(), std::logic_error);
+
+        // Another owner's detector is never reset.
+        sim.setOtherOwner(true);
+        std::size_t mark = fake.mark();
+        CHECK_THROWS(rm.vision_ctrl.enable_detection(rm_define::vision_detection_marker), VisionError);
+        std::vector<std::string> sent = visionCommands(fake.since(mark));
+        CHECK_EQ(sent.size(), 1u);
+        CHECK_EQ(sent[0], std::string("a5:"));
+        CHECK(!robot.vision.active());
+        sim.setOtherOwner(false);
+
+        // Inspect, reset, enable, verify; as robot-core VisionControl.
+        mark = fake.mark();
+        rm.vision_ctrl.enable_detection(rm_define::vision_detection_marker);
+        sent = visionCommands(fake.since(mark));
+        CHECK_EQ(sent.size(), 4u);
+        CHECK_EQ(sent[0], std::string("a5:"));
+        CHECK_EQ(sent[1], std::string("a3:0000"));
+        CHECK_EQ(sent[2], std::string("a3:2000"));
+        CHECK_EQ(sent[3], std::string("a5:"));
+        CHECK(robot.vision.active());
+
+        CHECK(rm.vision_ctrl.cond_wait_marker(rm_define::marker_trans_red_heart, 2.0));
+        CHECK(!rm.vision_ctrl.cond_wait_marker(rm_define::marker_trans_dice, 0.3));
+        std::vector<double> info = rm.vision_ctrl.get_marker_detection_info();
+        CHECK_EQ(info.size(), 6u);
+        CHECK_EQ(info[0], 1.0);
+        CHECK_EQ(info[1], static_cast<double>(rm_define::marker_trans_red_heart));
+        CHECK(rm.vision_ctrl.check_marker(rm_define::marker_all));
+
+        // Centre the marker (15, 8 degrees off) using only vision feedback.
+        CHECK(rm.vision_ctrl.detect_marker_and_aim(rm_define::marker_trans_red_heart));
+        double yaw, pitch, chassisYaw;
+        motion.angles(yaw, pitch, chassisYaw);
+        CHECK(std::fabs(yaw - 15.0) < 2.0);
+        CHECK(std::fabs(pitch - 8.0) < 2.0);
+        sim.setMarker(rm_define::marker_number_zero + 1);
+        CHECK(!rm.vision_ctrl.detect_marker_and_aim(rm_define::marker_trans_target));
+
+        // Switching detector stops the running one first.
+        mark = fake.mark();
+        rm.vision_ctrl.enable_detection(rm_define::vision_detection_pose);
+        sent = visionCommands(fake.since(mark));
+        CHECK_EQ(sent.size(), 6u);
+        CHECK_EQ(sent[0], std::string("a3:0000"));
+        CHECK_EQ(sent[4], std::string("a3:0400"));
+        CHECK_EQ(sim.mask(), 0x04);
+        CHECK(!rm.vision_ctrl.check_pose(rm_define::pose_capture));
+        rm.vision_ctrl.disable_detection(rm_define::vision_detection_pose);
+        CHECK_EQ(sim.mask(), 0);
+        CHECK(!robot.vision.active());
+
+        // Recording switches to video mode and waits for the status to confirm.
+        rm.media_ctrl.record(rm_define::record_on);
+        CHECK(sim.recording());
+        CameraStatus status;
+        CHECK(robot.cameraStatus(status));
+        CHECK_EQ(status.workMode, 1);
+        rm.media_ctrl.record(rm_define::record_off);
+        CHECK(!sim.recording());
+        // Taking a photo afterwards returns the camera to photo mode.
+        fake.ack(CMDSET_CAMERA, CMD_CAPTURE, Bytes(1, 0));
+        mark = fake.mark();
+        rm.media_ctrl.capture();
+        CHECK(sawDuss(fake.since(mark), CMDSET_CAMERA, 0x10, Bytes(1, 0)));
+        CHECK(sawDuss(fake.since(mark), CMDSET_CAMERA, CMD_CAPTURE, Bytes(1, 1)));
+
+        rm.vision_ctrl.enable_detection(rm_define::vision_detection_marker);
+    }
+    // Leaving the Lab controller disables vision.
+    CHECK(!robot.vision.active());
+    CHECK_EQ(sim.mask(), 0);
 }

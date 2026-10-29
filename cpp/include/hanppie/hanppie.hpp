@@ -9,6 +9,7 @@
 #include "hanppie/product.hpp"
 #include "hanppie/protocol.hpp"
 #include "hanppie/robot.hpp"
+#include "hanppie/vision.hpp"
 
 #define HANPPIE_VERSION "1.0.0"
 

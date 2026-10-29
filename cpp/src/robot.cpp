@@ -44,6 +44,12 @@ const char* const MUZZLE_FIRE_LED_OFF = "40000000ff0000ffffff6401000100";
 const char* const BLASTER_LED_ON = "71ffffff0164006400";
 const char* const BLASTER_LED_OFF = "70ffffff0164006400";
 
+// Camera commands (cmdset 0x02); see robot-core media/RobotCameraService.kt.
+const std::uint8_t CMD_CAMERA_RECORD = 0x02;
+const std::uint8_t CMD_CAMERA_SET_MODE = 0x10;
+const std::uint8_t CMD_CAMERA_STATUS_PUSH = 0xE4;
+const double CAMERA_STATUS_STALE_SECONDS = 1.5;
+
 void sleepSeconds(double seconds) {
     std::this_thread::sleep_for(std::chrono::microseconds(static_cast<long long>(seconds * 1e6)));
 }
@@ -418,6 +424,32 @@ void Gimbal::stop() {
     }
 }
 
+bool CameraStatus::cardError() const {
+    switch (cardState) {
+        case 2: case 3: case 4: case 6: case 10: case 11: return true;
+        default: return false;
+    }
+}
+
+bool decodeCameraStatus(const DussFrame& frame, CameraStatus& out) {
+    // Camera notifications arrive directly or relayed by the HDVT node.
+    if (!frame.valid || (frame.sender != HOST_CAMERA && frame.sender != HOST_HDVT_UAV) ||
+        frame.receiver != HOST_MOBILE || frame.attr != ATTR_NO_ACK || frame.cmdset != CMDSET_CAMERA ||
+        frame.cmdid != CMD_CAMERA_STATUS_PUSH || frame.payload.size() < 26) {
+        return false;
+    }
+    const Bytes& p = frame.payload;
+    unsigned flags = p[5] | (p[6] << 8);
+    out.receivedAt = monotonicSeconds();
+    out.workMode = flags & 3;
+    out.cardInserted = (p[2] & 0x10) != 0;
+    out.cardState = p[2] & 0x0F;
+    out.recording = (flags & 0x3000) != 0;
+    out.shooting = (p[7] & 0x30) != 0;
+    out.recordingSeconds = p[3] | (p[4] << 8);
+    return true;
+}
+
 Robot::Robot(const std::string& robotIp, const std::string& appid, const std::string& localIp,
              bool debug)
     : connection(robotIp, appid, localIp, protocol::LOCAL_CONTROL_PORT, debug),
@@ -425,11 +457,13 @@ Robot::Robot(const std::string& robotIp, const std::string& appid, const std::st
       audio(connection),
       chassis(*this),
       gimbal(*this),
+      vision(*this),
       controlMode_(false),
       armed_(false),
       hasOdometry_(false),
       hasGimbal_(false),
-      hasAttitude_(false) {
+      hasAttitude_(false),
+      hasCameraStatus_(false) {
     connection.onDuss([this](const DussFrame& frame) { handleDuss(frame); });
 }
 
@@ -461,6 +495,13 @@ bool Robot::chassisAttitude(ChassisAttitude& out) const {
     return true;
 }
 
+bool Robot::cameraStatus(CameraStatus& out) const {
+    std::lock_guard<std::mutex> lock(telemetryLock_);
+    if (!hasCameraStatus_) return false;
+    out = cameraStatus_;
+    return true;
+}
+
 bool Robot::initialize(const std::string& connType, const std::string& protoType,
                        double timeoutSeconds) {
     if (connType != "sta" || protoType != "udp") {
@@ -487,6 +528,8 @@ void Robot::exitControlMode() {
     if (!controlMode_) return;
     disarm();
     sendSetup(directModeExit(), false);
+    // The exit sequence disables onboard vision.
+    vision.forget();
     connection.configureModeKeepalive(fromHex(MODE_NORMAL), true);
     controlMode_ = false;
 }
@@ -582,7 +625,57 @@ RobotAck Robot::setSpeakerVolume(int volume, double timeout) {
 }
 
 RobotAck Robot::capture(double timeout) {
+    CameraStatus status;
+    if (cameraStatus(status) && monotonicSeconds() - status.receivedAt < CAMERA_STATUS_STALE_SECONDS &&
+        status.workMode != 0) {
+        setCameraMode(0);
+    }
     return request(HOST_MOBILE, HOST_CAMERA, CMDSET_CAMERA, CMD_CAPTURE, Bytes(1, 0x01), timeout);
+}
+
+CameraStatus Robot::freshCameraStatus() const {
+    CameraStatus status;
+    if (!cameraStatus(status) || monotonicSeconds() - status.receivedAt >= CAMERA_STATUS_STALE_SECONDS) {
+        throw std::runtime_error("no fresh camera status");
+    }
+    return status;
+}
+
+bool Robot::awaitCameraStatus(double after,
+                              const std::function<bool(const CameraStatus&)>& matches) {
+    // A new status must confirm the change within the status freshness window.
+    std::unique_lock<std::mutex> lock(telemetryLock_);
+    return telemetryCondition_.wait_for(
+        lock, std::chrono::duration<double>(CAMERA_STATUS_STALE_SECONDS), [&] {
+            return hasCameraStatus_ && cameraStatus_.receivedAt > after && matches(cameraStatus_);
+        });
+}
+
+void Robot::setCameraMode(int mode) {
+    double before = monotonicSeconds();
+    request(HOST_MOBILE, HOST_CAMERA, CMDSET_CAMERA, CMD_CAMERA_SET_MODE,
+            Bytes(1, static_cast<std::uint8_t>(mode)));
+    if (!awaitCameraStatus(before, [mode](const CameraStatus& s) { return s.workMode == mode; })) {
+        throw std::runtime_error("camera did not switch mode");
+    }
+}
+
+void Robot::setRecording(bool active) {
+    if (active) {
+        CameraStatus status = freshCameraStatus();
+        if (!status.canCapture()) throw std::runtime_error("SD card cannot record");
+        if (status.workMode != 1) {
+            setCameraMode(1);
+            if (!freshCameraStatus().canCapture()) throw std::runtime_error("SD card cannot record");
+        }
+    }
+    double before = monotonicSeconds();
+    request(HOST_MOBILE, HOST_CAMERA, CMDSET_CAMERA, CMD_CAMERA_RECORD,
+            Bytes(1, active ? 1 : 0));
+    if (!awaitCameraStatus(before, [active](const CameraStatus& s) { return s.recording == active; })) {
+        throw std::runtime_error(active ? "camera did not start recording"
+                                        : "camera did not stop recording");
+    }
 }
 
 void Robot::fireInfrared(double leaseSeconds) {
@@ -631,6 +724,15 @@ bool Robot::waitForChassisAttitude(ChassisAttitude& out, double after, double ti
     return ready;
 }
 
+bool Robot::waitForCameraStatus(CameraStatus& out, double after, double timeoutSeconds) {
+    std::unique_lock<std::mutex> lock(telemetryLock_);
+    bool ready = telemetryCondition_.wait_for(
+        lock, std::chrono::duration<double>(timeoutSeconds > 0 ? timeoutSeconds : 0),
+        [this, after] { return hasCameraStatus_ && cameraStatus_.receivedAt > after; });
+    if (ready) out = cameraStatus_;
+    return ready;
+}
+
 bool Robot::waitForOdometry(Odometry& out, double after, double timeoutSeconds) {
     std::unique_lock<std::mutex> lock(telemetryLock_);
     bool ready = telemetryCondition_.wait_for(
@@ -674,6 +776,7 @@ void Robot::handleDuss(const DussFrame& frame) {
     Odometry odometry;
     GimbalTelemetry gimbal;
     ChassisAttitude attitude;
+    CameraStatus camera;
     if (decodeOdometry(frame, odometry)) {
         std::lock_guard<std::mutex> lock(telemetryLock_);
         odometry_ = odometry;
@@ -688,6 +791,11 @@ void Robot::handleDuss(const DussFrame& frame) {
         std::lock_guard<std::mutex> lock(telemetryLock_);
         attitude_ = attitude;
         hasAttitude_ = true;
+        telemetryCondition_.notify_all();
+    } else if (decodeCameraStatus(frame, camera)) {
+        std::lock_guard<std::mutex> lock(telemetryLock_);
+        cameraStatus_ = camera;
+        hasCameraStatus_ = true;
         telemetryCondition_.notify_all();
     }
 }

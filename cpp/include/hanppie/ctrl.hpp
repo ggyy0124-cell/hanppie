@@ -13,6 +13,9 @@
 //   and is open loop (distance / speed). Lab uses an onboard position command.
 // - App control frames cap chassis speed at 1 m/s and 150 deg/s, and gimbal
 //   speed at 120 deg/s; larger Lab values are clamped.
+// - Vision runs one detector at a time, as in the App. Detection results are
+//   pushed by the robot; cond_wait and detect_marker_and_aim act on them on the
+//   host, so reactions lag by the Wi-Fi round trip.
 #ifndef HANPPIE_CTRL_HPP
 #define HANPPIE_CTRL_HPP
 
@@ -21,6 +24,7 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "hanppie/robot.hpp"
 
@@ -67,6 +71,48 @@ const std::uint32_t media_sound_count_down = 0x106;
 // Musical notes 1C..3B are 0x107..0x12A, as in Lab.
 const std::uint32_t media_sound_solmization_1C = 0x107;
 const std::uint32_t media_sound_solmization_3B = 0x12A;
+
+// Detector masks. Lab's auto_aim, people_follow and car detectors are not
+// available over this API.
+const int vision_detection_head_shoulder = 0x1;
+const int vision_detection_people = 0x2;
+const int vision_detection_pose = 0x4;
+const int vision_detection_line = 0x10;
+const int vision_detection_marker = 0x20;
+
+// Pose IDs, as reported in the vision push info low word.
+const int pose_all = 0;
+const int pose_jump = 1;
+const int pose_left_hand_up = 2;
+const int pose_right_hand_up = 3;
+const int pose_victory = 4;
+const int pose_give_in = 5;
+const int pose_capture = 6;
+const int pose_left_hand_wave = 7;
+const int pose_right_hand_wave = 8;
+const int pose_idle = 9;
+
+// Marker IDs; the negative and zero values are Lab's group wildcards.
+const int marker_trans_all = -2;   // left, right, forward, backward arrows
+const int marker_number_all = -3;  // 0..9
+const int marker_letter_all = -4;  // A..Z
+const int marker_all = 0;          // any marker
+const int marker_trans_stop = 1;
+const int marker_trans_dice = 2;
+const int marker_trans_target = 3;
+const int marker_trans_left = 4;
+const int marker_trans_right = 5;
+const int marker_trans_forward = 6;
+const int marker_trans_backward = 7;
+const int marker_trans_red_heart = 8;
+const int marker_trans_sword = 9;
+const int marker_number_zero = 10;  // number n is 10 + n
+const int marker_number_nine = 19;
+const int marker_letter_A = 20;  // letter c is 20 + (c - 'A')
+const int marker_letter_Z = 45;
+
+const int record_off = 0;
+const int record_on = 1;
 }  // namespace rm_define
 
 class RobotCtrl;
@@ -174,8 +220,51 @@ public:
     explicit MediaCtrl(RobotCtrl& rm) : rm_(rm) {}
     void play_sound(std::uint32_t sound_id);
     void capture();
+    // SD card video: record_on starts, record_off stops; confirmed by camera status.
+    void record(int ctrl);
 
 private:
+    RobotCtrl& rm_;
+};
+
+class VisionCtrl {
+public:
+    explicit VisionCtrl(RobotCtrl& rm) : rm_(rm) {}
+
+    // func is one rm_define::vision_detection_* value. Enabling a different
+    // detector replaces the running one.
+    void enable_detection(int func);
+    void disable_detection(int func);
+
+    // Lab list layouts, empty results as {0} ({0, 0} for lines):
+    //   markers, poses: [num, id1, x1, y1, w1, h1, id2, ...]
+    //   people:         [num, x1, y1, w1, h1, ...]
+    //   line:           [num, info, x1, y1, tangent1, curvature1, ...] (middle 10 points)
+    // Coordinates are normalized to the video frame, centre-based.
+    std::vector<double> get_marker_detection_info();
+    std::vector<double> get_pose_detection_info();
+    std::vector<double> get_people_detection_info();
+    std::vector<double> get_line_detection_info();
+
+    // Lab cond_wait / check_condition for recognitions. marker_id may be a
+    // marker_* ID or group wildcard; pose_id a pose_* ID or pose_all.
+    // timeout < 0 waits forever; returns false on timeout.
+    bool cond_wait_marker(int marker_id, double timeout = -1);
+    bool cond_wait_pose(int pose_id, double timeout = -1);
+    bool cond_wait_people(double timeout = -1);
+    bool check_marker(int marker_id);
+    bool check_pose(int pose_id);
+    bool check_people();
+
+    // Turn the gimbal until the marker sits at the aim point, using the same
+    // field-of-view conversion as onboard Lab; gives up after 5 s. Requires
+    // marker detection. Returns whether the marker was centred.
+    bool detect_marker_and_aim(int marker_id);
+
+private:
+    bool waitFor(int detector, bool (*matches)(const VisionReport&, int), int arg, double timeout);
+    bool check(int detector, bool (*matches)(const VisionReport&, int), int arg);
+    VisionReport latest(int detector);
     RobotCtrl& rm_;
 };
 
@@ -202,6 +291,7 @@ public:
     GunCtrl gun_ctrl;
     IrBlasterCtrl ir_blaster_ctrl;
     MediaCtrl media_ctrl;
+    VisionCtrl vision_ctrl;
 
     // Lab time.sleep equivalent.
     static void sleep(double seconds);
@@ -235,6 +325,11 @@ std::pair<double, double> directionVelocity(double directionAngle, double speed)
 double approachRate(double error, double maxRate, double tolerance = 1.0);
 // Shortest signed difference a - b in degrees, in (-180, 180].
 double angleDifference(double a, double b);
+// Whether a marker ID matches a Lab marker ID or group wildcard.
+bool markerMatches(int marker_id, int wanted);
+// Lab's gimbal aim offsets (yaw right, pitch up) in degrees for a target at
+// normalized frame position x, y (96 x 54 degree field, aim point 0.5, 0.53).
+std::pair<double, double> aimOffset(double x, double y);
 
 }  // namespace ctrl
 }  // namespace hanppie

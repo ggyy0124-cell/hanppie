@@ -1,6 +1,7 @@
 #include "hanppie/ctrl.hpp"
 
 #include <chrono>
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -24,6 +25,15 @@ const double LEASE_SECONDS = 0.25;
 const double APPROACH_GAIN = 3.0;
 const double APPROACH_MIN_RATE = 3.0;
 const double TELEMETRY_STALE_SECONDS = 0.5;
+// Onboard Lab detect_marker_and_aim: 96 x 54 degree field, aim point
+// (0.5, 0.53), 1 degree tolerance, 5 s budget.
+const double CAMERA_FOV_YAW = 96.0;
+const double CAMERA_FOV_PITCH = 54.0;
+const double AIM_POINT_Y = 0.53;
+const double AIM_SECONDS = 5.0;
+// Lab's get_*_detection_info drops results older than 1 s.
+const double DETECTION_MAX_AGE = 1.0;
+const double VISION_POLL_SECONDS = 0.5;
 
 void checkRange(double value, double low, double high, const char* name) {
     if (!(value >= low && value <= high)) {
@@ -93,6 +103,23 @@ double approachRate(double error, double maxRate, double tolerance) {
     return error > 0 ? rate : -rate;
 }
 
+bool markerMatches(int marker_id, int wanted) {
+    switch (wanted) {
+        case rm_define::marker_all: return true;
+        case rm_define::marker_trans_all:
+            return marker_id >= rm_define::marker_trans_left && marker_id <= rm_define::marker_trans_backward;
+        case rm_define::marker_number_all:
+            return marker_id >= rm_define::marker_number_zero && marker_id <= rm_define::marker_number_nine;
+        case rm_define::marker_letter_all:
+            return marker_id >= rm_define::marker_letter_A && marker_id <= rm_define::marker_letter_Z;
+        default: return marker_id == wanted;
+    }
+}
+
+std::pair<double, double> aimOffset(double x, double y) {
+    return std::make_pair((x - 0.5) * CAMERA_FOV_YAW, (AIM_POINT_Y - y) * CAMERA_FOV_PITCH);
+}
+
 double angleDifference(double a, double b) {
     double d = std::fmod(a - b, 360.0);
     if (d <= -180.0) d += 360.0;
@@ -110,6 +137,7 @@ RobotCtrl::RobotCtrl(Robot& robot_)
       gun_ctrl(*this),
       ir_blaster_ctrl(*this),
       media_ctrl(*this),
+      vision_ctrl(*this),
       chassisHeldUntil_(0.0),
       stopping_(false),
       gimbalMoving_(false) {
@@ -130,6 +158,11 @@ RobotCtrl::~RobotCtrl() {
     thread_.join();
     try {
         if (robot.connected()) {
+            try {
+                robot.vision.stop();
+            } catch (...) {
+                // Leaving control mode below disables vision as well.
+            }
             robot.chassis.stop();
             robot.gimbal.stop();
             robot.exitControlMode();
@@ -431,6 +464,219 @@ void IrBlasterCtrl::fire_once() {
 void MediaCtrl::play_sound(std::uint32_t sound_id) { rm_.robot.playSound(sound_id); }
 
 void MediaCtrl::capture() { rm_.robot.capture(); }
+
+void MediaCtrl::record(int ctrl) {
+    if (ctrl != rm_define::record_on && ctrl != rm_define::record_off) {
+        throw std::invalid_argument("ctrl must be rm_define::record_on or record_off");
+    }
+    rm_.robot.setRecording(ctrl == rm_define::record_on);
+}
+
+// ---- VisionCtrl ------------------------------------------------------------
+
+namespace {
+
+VisionMode detectorMode(int func) {
+    switch (func) {
+        case rm_define::vision_detection_head_shoulder: return VisionMode::HeadShoulders;
+        case rm_define::vision_detection_people: return VisionMode::People;
+        case rm_define::vision_detection_pose: return VisionMode::Pose;
+        case rm_define::vision_detection_line: return VisionMode::Lines;
+        case rm_define::vision_detection_marker: return VisionMode::Markers;
+        default:
+            throw std::invalid_argument("func must be one supported rm_define::vision_detection_* value");
+    }
+}
+
+bool hasMarker(const VisionReport& report, int wanted) {
+    for (std::size_t i = 0; i < report.rectangles.size(); ++i) {
+        if (markerMatches(report.rectangles[i].markerId(), wanted)) return true;
+    }
+    return false;
+}
+
+bool hasPose(const VisionReport& report, int wanted) {
+    for (std::size_t i = 0; i < report.rectangles.size(); ++i) {
+        int id = report.rectangles[i].poseId();
+        if (wanted == rm_define::pose_all || id == wanted) return true;
+    }
+    return false;
+}
+
+bool hasAny(const VisionReport& report, int) { return !report.rectangles.empty(); }
+
+std::vector<double> rectList(const VisionReport& report, bool withId, bool marker) {
+    std::vector<double> out(1, static_cast<double>(report.rectangles.size()));
+    for (std::size_t i = 0; i < report.rectangles.size(); ++i) {
+        const VisionRect& r = report.rectangles[i];
+        if (withId) out.push_back(marker ? r.markerId() : r.poseId());
+        out.push_back(r.x);
+        out.push_back(r.y);
+        out.push_back(r.width);
+        out.push_back(r.height);
+    }
+    return out;
+}
+
+}  // namespace
+
+void VisionCtrl::enable_detection(int func) {
+    VisionMode mode = detectorMode(func);
+    Vision& vision = rm_.robot.vision;
+    if (vision.active()) {
+        if (vision.mode() == mode) return;
+        vision.stop();
+    }
+    vision.start(mode);
+}
+
+void VisionCtrl::disable_detection(int func) {
+    VisionMode mode = detectorMode(func);
+    Vision& vision = rm_.robot.vision;
+    if (vision.active() && vision.mode() == mode) vision.stop();
+}
+
+VisionReport VisionCtrl::latest(int detector) {
+    Vision& vision = rm_.robot.vision;
+    if (!vision.active() || vision.mode() != detectorMode(detector)) {
+        throw std::logic_error("enable_detection for this detector first");
+    }
+    VisionReport report;
+    if (!vision.latest(report, DETECTION_MAX_AGE)) {
+        report.receivedAt = 0;
+        report.type = visionReportType(vision.mode());
+        report.status = 0;
+        report.error = 0;
+    }
+    if (report.error != 0) throw VisionError("vision reported a device error");
+    return report;
+}
+
+std::vector<double> VisionCtrl::get_marker_detection_info() {
+    return rectList(latest(rm_define::vision_detection_marker), true, true);
+}
+
+std::vector<double> VisionCtrl::get_pose_detection_info() {
+    return rectList(latest(rm_define::vision_detection_pose), true, false);
+}
+
+std::vector<double> VisionCtrl::get_people_detection_info() {
+    return rectList(latest(rm_define::vision_detection_people), false, false);
+}
+
+std::vector<double> VisionCtrl::get_line_detection_info() {
+    VisionReport report = latest(rm_define::vision_detection_line);
+    std::vector<VisionLinePoint> points = report.linePoints;
+    if (points.empty()) return std::vector<double>(2, 0.0);
+    // Several lines arrive as consecutive groups of 10; Lab returns the middle one.
+    if (points.size() > 10) {
+        std::size_t middle = (points.size() / 10) / 2;
+        points = std::vector<VisionLinePoint>(points.begin() + middle * 10,
+                                              points.begin() + std::min(points.size(), middle * 10 + 10));
+    }
+    std::vector<double> out;
+    out.push_back(static_cast<double>(points.size()));
+    out.push_back(points[0].info);
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        out.push_back(points[i].x);
+        out.push_back(points[i].y);
+        out.push_back(points[i].tangent);
+        out.push_back(points[i].curvature);
+    }
+    return out;
+}
+
+bool VisionCtrl::check(int detector, bool (*matches)(const VisionReport&, int), int arg) {
+    return matches(latest(detector), arg);
+}
+
+bool VisionCtrl::waitFor(int detector, bool (*matches)(const VisionReport&, int), int arg,
+                         double timeout) {
+    latest(detector);  // validates the detector and device state
+    Vision& vision = rm_.robot.vision;
+    double deadline = timeout < 0 ? -1 : monotonicSeconds() + timeout;
+    double after = monotonicSeconds();
+    for (;;) {
+        double slice = VISION_POLL_SECONDS;
+        if (deadline >= 0) {
+            double left = deadline - monotonicSeconds();
+            if (left <= 0) return false;
+            if (left < slice) slice = left;
+        }
+        VisionReport report;
+        if (vision.waitForReport(report, after, slice)) {
+            after = report.receivedAt;
+            if (report.error != 0) throw VisionError("vision reported a device error");
+            if (matches(report, arg)) return true;
+        } else if (!vision.active() || !rm_.robot.connected()) {
+            throw std::runtime_error("vision stopped while waiting");
+        }
+    }
+}
+
+bool VisionCtrl::cond_wait_marker(int marker_id, double timeout) {
+    return waitFor(rm_define::vision_detection_marker, hasMarker, marker_id, timeout);
+}
+
+bool VisionCtrl::cond_wait_pose(int pose_id, double timeout) {
+    return waitFor(rm_define::vision_detection_pose, hasPose, pose_id, timeout);
+}
+
+bool VisionCtrl::cond_wait_people(double timeout) {
+    return waitFor(rm_define::vision_detection_people, hasAny, 0, timeout);
+}
+
+bool VisionCtrl::check_marker(int marker_id) {
+    return check(rm_define::vision_detection_marker, hasMarker, marker_id);
+}
+
+bool VisionCtrl::check_pose(int pose_id) {
+    return check(rm_define::vision_detection_pose, hasPose, pose_id);
+}
+
+bool VisionCtrl::check_people() { return check(rm_define::vision_detection_people, hasAny, 0); }
+
+bool VisionCtrl::detect_marker_and_aim(int marker_id) {
+    checkRange(marker_id, 0, rm_define::marker_letter_Z, "marker_id");
+    latest(rm_define::vision_detection_marker);
+    Vision& vision = rm_.robot.vision;
+    double deadline = monotonicSeconds() + AIM_SECONDS;
+    double after = 0.0;
+    bool aimed = false;
+    try {
+        while (monotonicSeconds() < deadline) {
+            VisionReport report;
+            // Act only on fresh reports so a stale position never keeps the gimbal turning.
+            if (!vision.waitForReport(report, after, VISION_POLL_SECONDS)) {
+                rm_.setGimbal(0, 0);
+                if (!vision.active() || !rm_.robot.connected()) break;
+                continue;
+            }
+            after = report.receivedAt;
+            const VisionRect* target = 0;
+            for (std::size_t i = 0; i < report.rectangles.size() && !target; ++i) {
+                if (markerMatches(report.rectangles[i].markerId(), marker_id)) target = &report.rectangles[i];
+            }
+            if (!target) {
+                rm_.setGimbal(0, 0);
+                continue;
+            }
+            std::pair<double, double> offset = aimOffset(target->x, target->y);
+            double yawRate = approachRate(offset.first, GIMBAL_SPEED_MAX);
+            double pitchRate = approachRate(offset.second, GIMBAL_SPEED_MAX);
+            if (yawRate == 0.0 && pitchRate == 0.0) {
+                aimed = true;
+                break;
+            }
+            rm_.setGimbal(pitchRate, yawRate);
+        }
+    } catch (...) {
+        rm_.setGimbal(0, 0);
+        throw;
+    }
+    rm_.setGimbal(0, 0);
+    return aimed;
+}
 
 }  // namespace ctrl
 }  // namespace hanppie

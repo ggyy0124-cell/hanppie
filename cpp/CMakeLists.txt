@@ -22,6 +22,7 @@ add_library(hanppie
   src/product.cpp
   src/protocol.cpp
   src/robot.cpp
+  src/vision.cpp
 )
 add_library(hanppie::hanppie ALIAS hanppie)
 target_include_directories(hanppie PUBLIC
@@ -45,6 +46,11 @@ if(HANPPIE_BUILD_EXAMPLES)
   target_link_libraries(hanppie_drive PRIVATE hanppie::hanppie)
   add_executable(hanppie_lab examples/lab.cpp)
   target_link_libraries(hanppie_lab PRIVATE hanppie::hanppie)
+  add_executable(hanppie_challenges examples/challenges.cpp)
+  target_link_libraries(hanppie_challenges PRIVATE hanppie::hanppie)
+  if(MSVC)
+    target_compile_options(hanppie_challenges PRIVATE /utf-8)
+  endif()
 endif()
 
 if(HANPPIE_BUILD_TESTS)
