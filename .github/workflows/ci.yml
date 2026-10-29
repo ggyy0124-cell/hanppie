@@ -35,6 +35,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          # The 3-core macOS runner starves real-time safety windows (e.g. 250 ms input presence)
+          # when both test JVMs and packaging run at once.
+          - os: macos-latest
+            gradle-args: --no-parallel
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -50,7 +55,7 @@ jobs:
           cache: gradle
       - name: Test and build desktop application
         shell: bash
-        run: ./gradlew :packages:robot-core:desktopTest :shared:jvmTest :desktopApp:createDistributable
+        run: ./gradlew ${{ matrix.gradle-args }} :packages:robot-core:desktopTest :shared:jvmTest :desktopApp:createDistributable
       - uses: actions/upload-artifact@v4
         if: always()
         with:
