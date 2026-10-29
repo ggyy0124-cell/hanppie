@@ -1,25 +1,15 @@
 #include "net.hpp"
 
-#include <arpa/inet.h>
-#include <cerrno>
-#include <cstring>
-#include <fcntl.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <poll.h>
 #include <stdexcept>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
+
+#include "socket_compat.hpp"
 
 namespace hanppie {
 namespace net {
 
-namespace {
+static_assert(sizeof(NativeSocket) == sizeof(sys::Handle), "NativeSocket must hold a socket handle");
 
-std::runtime_error socketError(const std::string& what) {
-    return std::runtime_error(what + ": " + std::strerror(errno));
-}
+namespace {
 
 sockaddr_in makeAddress(const std::string& ip, std::uint16_t port) {
     sockaddr_in address;
@@ -37,62 +27,69 @@ int pollTimeout(double seconds) {
     return static_cast<int>(seconds * 1000.0 + 0.5);
 }
 
+bool waitFor(sys::Handle handle, short events, double timeoutSeconds) {
+    pollfd item;
+    item.fd = handle;
+    item.events = events;
+    item.revents = 0;
+    return sys::pollHandles(&item, 1, pollTimeout(timeoutSeconds)) > 0 &&
+           (item.revents & (events | POLLERR | POLLHUP)) != 0;
+}
+
 }  // namespace
 
-UdpSocket::UdpSocket() : fd_(-1) {}
+using sys::socketError;
+
+UdpSocket::UdpSocket() : fd_(sys::INVALID_HANDLE) {}
 
 UdpSocket::~UdpSocket() { close(); }
 
 void UdpSocket::open(const std::string& bindIp, std::uint16_t port, bool broadcast) {
     close();
+    sys::startup();
     fd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd_ < 0) throw socketError("socket");
+    if (fd_ == sys::INVALID_HANDLE) throw socketError("socket");
     int one = 1;
-    ::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    if (broadcast) ::setsockopt(fd_, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one));
+    sys::setOption(fd_, SOL_SOCKET, SO_REUSEADDR, one);
+    if (broadcast) sys::setOption(fd_, SOL_SOCKET, SO_BROADCAST, one);
+    sys::ignoreUdpConnectionReset(fd_);
     sockaddr_in address = makeAddress(bindIp, port);
     if (::bind(fd_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
         std::runtime_error error = socketError("bind");
         close();
         throw error;
     }
-    int flags = ::fcntl(fd_, F_GETFL, 0);
-    ::fcntl(fd_, F_SETFL, flags | O_NONBLOCK);
+    sys::setNonBlocking(fd_);
 }
 
+bool UdpSocket::isOpen() const { return fd_ != sys::INVALID_HANDLE; }
+
 void UdpSocket::close() {
-    if (fd_ >= 0) ::close(fd_);
-    fd_ = -1;
+    if (fd_ != sys::INVALID_HANDLE) sys::closeHandle(fd_);
+    fd_ = sys::INVALID_HANDLE;
 }
 
 void UdpSocket::setReceiveBuffer(int bytes) {
-    if (fd_ >= 0) ::setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &bytes, sizeof(bytes));
+    if (fd_ != sys::INVALID_HANDLE) sys::setOption(fd_, SOL_SOCKET, SO_RCVBUF, bytes);
 }
 
 void UdpSocket::sendTo(const Bytes& data, const std::string& ip, std::uint16_t port) {
-    if (fd_ < 0) throw std::runtime_error("UDP socket is not open");
+    if (fd_ == sys::INVALID_HANDLE) throw std::runtime_error("UDP socket is not open");
     sockaddr_in address = makeAddress(ip, port);
-    ssize_t sent = ::sendto(fd_, data.data(), data.size(), 0, reinterpret_cast<sockaddr*>(&address),
-                            sizeof(address));
-    if (sent < 0) throw socketError("sendto");
+    if (sys::sendDatagram(fd_, data.data(), data.size(), address) < 0) throw socketError("sendto");
 }
 
 bool UdpSocket::waitReadable(double timeoutSeconds) {
-    if (fd_ < 0) return false;
-    pollfd item;
-    item.fd = fd_;
-    item.events = POLLIN;
-    item.revents = 0;
-    return ::poll(&item, 1, pollTimeout(timeoutSeconds)) > 0 && (item.revents & POLLIN);
+    if (fd_ == sys::INVALID_HANDLE) return false;
+    return waitFor(fd_, POLLIN, timeoutSeconds);
 }
 
 bool UdpSocket::receive(Bytes& data, std::string& fromIp) {
-    if (fd_ < 0) return false;
+    if (fd_ == sys::INVALID_HANDLE) return false;
     data.resize(65535);
     sockaddr_in address;
-    socklen_t length = sizeof(address);
-    ssize_t received = ::recvfrom(fd_, data.data(), data.size(), 0,
-                                  reinterpret_cast<sockaddr*>(&address), &length);
+    std::memset(&address, 0, sizeof(address));
+    sys::IoSize received = sys::receiveDatagram(fd_, &data[0], data.size(), address);
     if (received < 0) {
         data.clear();
         return false;
@@ -104,43 +101,38 @@ bool UdpSocket::receive(Bytes& data, std::string& fromIp) {
     return true;
 }
 
-TcpSocket::TcpSocket() : fd_(-1), timeout_(10.0) {}
+TcpSocket::TcpSocket() : fd_(sys::INVALID_HANDLE), timeout_(10.0) {}
 
 TcpSocket::~TcpSocket() { close(); }
 
 void TcpSocket::connect(const std::string& host, std::uint16_t port, double timeoutSeconds) {
     close();
+    sys::startup();
     timeout_ = timeoutSeconds;
     sockaddr_in address = makeAddress(host, port);
     fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd_ < 0) throw socketError("socket");
+    if (fd_ == sys::INVALID_HANDLE) throw socketError("socket");
 #ifdef SO_NOSIGPIPE
     int one = 1;
-    ::setsockopt(fd_, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+    sys::setOption(fd_, SOL_SOCKET, SO_NOSIGPIPE, one);
 #endif
-    int flags = ::fcntl(fd_, F_GETFL, 0);
-    ::fcntl(fd_, F_SETFL, flags | O_NONBLOCK);
+    sys::setNonBlocking(fd_);
     int result = ::connect(fd_, reinterpret_cast<sockaddr*>(&address), sizeof(address));
-    if (result != 0 && errno != EINPROGRESS) {
+    if (result != 0 && !sys::connectPending(sys::lastError())) {
         std::runtime_error error = socketError("connect");
         close();
         throw error;
     }
     if (result != 0) {
-        pollfd item;
-        item.fd = fd_;
-        item.events = POLLOUT;
-        item.revents = 0;
-        if (::poll(&item, 1, pollTimeout(timeout_)) <= 0) {
+        if (!waitFor(fd_, POLLOUT, timeout_)) {
             close();
             throw std::runtime_error("connect timed out: " + host);
         }
         int error = 0;
-        socklen_t length = sizeof(error);
-        ::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &error, &length);
+        sys::AddressLength length = static_cast<sys::AddressLength>(sizeof(error));
+        ::getsockopt(fd_, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &length);
         if (error != 0) {
-            errno = error;
-            std::runtime_error failure = socketError("connect");
+            std::runtime_error failure = sys::socketError("connect", error);
             close();
             throw failure;
         }
@@ -149,8 +141,8 @@ void TcpSocket::connect(const std::string& host, std::uint16_t port, double time
 }
 
 void TcpSocket::close() {
-    if (fd_ >= 0) ::close(fd_);
-    fd_ = -1;
+    if (fd_ != sys::INVALID_HANDLE) sys::closeHandle(fd_);
+    fd_ = sys::INVALID_HANDLE;
     buffer_.clear();
 }
 
@@ -159,21 +151,13 @@ void TcpSocket::sendAll(const std::string& data) {
 }
 
 void TcpSocket::sendAll(const std::uint8_t* data, std::size_t size) {
-    if (fd_ < 0) throw std::runtime_error("TCP socket is not connected");
+    if (fd_ == sys::INVALID_HANDLE) throw std::runtime_error("TCP socket is not connected");
     std::size_t offset = 0;
     while (offset < size) {
-        pollfd item;
-        item.fd = fd_;
-        item.events = POLLOUT;
-        item.revents = 0;
-        if (::poll(&item, 1, pollTimeout(timeout_)) <= 0) throw std::runtime_error("send timed out");
-#ifdef MSG_NOSIGNAL
-        ssize_t sent = ::send(fd_, data + offset, size - offset, MSG_NOSIGNAL);
-#else
-        ssize_t sent = ::send(fd_, data + offset, size - offset, 0);
-#endif
+        if (!waitFor(fd_, POLLOUT, timeout_)) throw std::runtime_error("send timed out");
+        sys::IoSize sent = sys::sendBytes(fd_, data + offset, size - offset);
         if (sent < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
+            if (sys::wouldBlock(sys::lastError())) continue;
             throw socketError("send");
         }
         offset += static_cast<std::size_t>(sent);
@@ -181,7 +165,7 @@ void TcpSocket::sendAll(const std::uint8_t* data, std::size_t size) {
 }
 
 std::string TcpSocket::readLine() {
-    if (fd_ < 0) throw std::runtime_error("TCP socket is not connected");
+    if (fd_ == sys::INVALID_HANDLE) throw std::runtime_error("TCP socket is not connected");
     for (;;) {
         std::size_t newline = buffer_.find('\n');
         if (newline != std::string::npos) {
@@ -190,15 +174,11 @@ std::string TcpSocket::readLine() {
             if (!line.empty() && line[line.size() - 1] == '\r') line.erase(line.size() - 1);
             return line;
         }
-        pollfd item;
-        item.fd = fd_;
-        item.events = POLLIN;
-        item.revents = 0;
-        if (::poll(&item, 1, pollTimeout(timeout_)) <= 0) throw std::runtime_error("read timed out");
+        if (!waitFor(fd_, POLLIN, timeout_)) throw std::runtime_error("read timed out");
         char chunk[1024];
-        ssize_t received = ::recv(fd_, chunk, sizeof(chunk), 0);
+        sys::IoSize received = sys::receiveBytes(fd_, chunk, sizeof(chunk));
         if (received < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
+            if (sys::wouldBlock(sys::lastError())) continue;
             throw socketError("recv");
         }
         if (received == 0) throw std::runtime_error("connection closed");

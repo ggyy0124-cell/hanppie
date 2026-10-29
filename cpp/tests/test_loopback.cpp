@@ -2,26 +2,23 @@
 // AppID claim, outer session, setup replay, request/ACK matching, command
 // leases, telemetry, media dispatch and Lab FTP upload without hardware.
 // Requires the fixed App ports (45678, 56789, 10607, 10609) to be free.
-#include <arpa/inet.h>
 #include <atomic>
 #include <chrono>
 #include <cstring>
 #include <map>
 #include <mutex>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
 #include <thread>
-#include <unistd.h>
 #include <utility>
 #include <vector>
 
 #include "golden.hpp"
 #include "hanppie/hanppie.hpp"
+#include "socket_compat.hpp"
 #include "test_support.hpp"
 
 using namespace hanppie;
 using namespace hanppie::protocol;
+namespace sys = hanppie::net::sys;
 
 namespace {
 
@@ -33,29 +30,6 @@ struct Captured {
     DussFrame frame;
 };
 
-int udpSocket(std::uint16_t port) {
-    int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
-    int one = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    sockaddr_in address;
-    std::memset(&address, 0, sizeof(address));
-    address.sin_family = AF_INET;
-    address.sin_port = htons(port);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
-        ::close(fd);
-        throw std::runtime_error("fake robot could not bind a required port");
-    }
-    timeval timeout = {0, 20000};
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    return fd;
-}
-
-void sendTo(int fd, const Bytes& data, const sockaddr_in& address) {
-    ::sendto(fd, data.data(), data.size(), 0, reinterpret_cast<const sockaddr*>(&address),
-             sizeof(address));
-}
-
 sockaddr_in loopback(std::uint16_t port) {
     sockaddr_in address;
     std::memset(&address, 0, sizeof(address));
@@ -63,6 +37,24 @@ sockaddr_in loopback(std::uint16_t port) {
     address.sin_port = htons(port);
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     return address;
+}
+
+sys::Handle udpSocket(std::uint16_t port) {
+    sys::startup();
+    sys::Handle fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    int one = 1;
+    sys::setOption(fd, SOL_SOCKET, SO_REUSEADDR, one);
+    sys::ignoreUdpConnectionReset(fd);
+    sockaddr_in address = loopback(port);
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+        sys::closeHandle(fd);
+        throw std::runtime_error("fake robot could not bind a required port");
+    }
+    return fd;
+}
+
+void sendTo(sys::Handle fd, const Bytes& data, const sockaddr_in& address) {
+    sys::sendDatagram(fd, data.data(), data.size(), address);
 }
 
 // Minimal robot side of the App protocol.
@@ -80,8 +72,8 @@ public:
     ~FakeRobot() {
         stop_ = true;
         thread_.join();
-        ::close(appFd_);
-        ::close(controlFd_);
+        sys::closeHandle(appFd_);
+        sys::closeHandle(controlFd_);
     }
 
     // Reply to requests for (cmdset, cmdid) with the given ACK payload.
@@ -129,19 +121,21 @@ private:
     void run() {
         Bytes buffer(65535);
         while (!stop_) {
-            pollfd items[2] = {{appFd_, POLLIN, 0}, {controlFd_, POLLIN, 0}};
-            if (::poll(items, 2, 20) <= 0) continue;
+            pollfd items[2];
+            items[0].fd = appFd_;
+            items[1].fd = controlFd_;
+            for (int i = 0; i < 2; ++i) {
+                items[i].events = POLLIN;
+                items[i].revents = 0;
+            }
+            if (sys::pollHandles(items, 2, 20) <= 0) continue;
             sockaddr_in from;
-            socklen_t length = sizeof(from);
             if (items[0].revents & POLLIN) {
-                ssize_t size = ::recvfrom(appFd_, buffer.data(), buffer.size(), 0,
-                                          reinterpret_cast<sockaddr*>(&from), &length);
+                sys::IoSize size = sys::receiveDatagram(appFd_, &buffer[0], buffer.size(), from);
                 if (size == 8) answerClaim(Bytes(buffer.begin(), buffer.begin() + size));
             }
             if (items[1].revents & POLLIN) {
-                length = sizeof(from);
-                ssize_t size = ::recvfrom(controlFd_, buffer.data(), buffer.size(), 0,
-                                          reinterpret_cast<sockaddr*>(&from), &length);
+                sys::IoSize size = sys::receiveDatagram(controlFd_, &buffer[0], buffer.size(), from);
                 if (size > 0) handle(Bytes(buffer.begin(), buffer.begin() + size), from);
             }
         }
@@ -199,8 +193,8 @@ private:
         for (std::size_t i = 0; i < replies.size(); ++i) sendTo(controlFd_, replies[i].second, from);
     }
 
-    int appFd_;
-    int controlFd_;
+    sys::Handle appFd_;
+    sys::Handle controlFd_;
     std::atomic<bool> stop_;
     std::uint16_t sequence_;
     std::thread thread_;
@@ -361,28 +355,27 @@ TEST(loopback_session_matches_python_reference_flow) {
 
 namespace {
 
-int listenTcp(std::uint16_t& port) {
-    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    int one = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+sys::Handle listenTcp(std::uint16_t& port) {
+    sys::startup();
+    sys::Handle fd = ::socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in address = loopback(0);
     ::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address));
     ::listen(fd, 1);
-    socklen_t length = sizeof(address);
+    sys::AddressLength length = static_cast<sys::AddressLength>(sizeof(address));
     ::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &length);
     port = ntohs(address.sin_port);
     return fd;
 }
 
-void writeLine(int fd, const std::string& line) {
+void writeLine(sys::Handle fd, const std::string& line) {
     std::string data = line + "\r\n";
-    ::send(fd, data.data(), data.size(), 0);
+    sys::sendBytes(fd, data.data(), data.size());
 }
 
-std::string readLine(int fd) {
+std::string readLine(sys::Handle fd) {
     std::string line;
     char c;
-    while (::recv(fd, &c, 1, 0) == 1 && c != '\n') {
+    while (sys::receiveBytes(fd, &c, 1) == 1 && c != '\n') {
         if (c != '\r') line.push_back(c);
     }
     return line;
@@ -392,14 +385,14 @@ std::string readLine(int fd) {
 
 TEST(lab_upload_uses_anonymous_binary_passive_ftp) {
     std::uint16_t port = 0;
-    int server = listenTcp(port);
+    sys::Handle server = listenTcp(port);
     std::vector<std::string> commands;
     std::string stored;
     std::thread ftp([&] {
-        int control = ::accept(server, NULL, NULL);
+        sys::Handle control = ::accept(server, NULL, NULL);
         writeLine(control, "220-Fake S1");
         writeLine(control, "220 ready");
-        int data = -1;
+        sys::Handle data = sys::INVALID_HANDLE;
         for (;;) {
             std::string line = readLine(control);
             if (line.empty()) break;
@@ -416,15 +409,15 @@ TEST(lab_upload_uses_anonymous_binary_passive_ftp) {
                               dataPort >> 8, dataPort & 0xFF);
                 writeLine(control, reply);
             } else if (line.compare(0, 4, "STOR") == 0) {
-                int stream = ::accept(data, NULL, NULL);
+                sys::Handle stream = ::accept(data, NULL, NULL);
                 writeLine(control, "150 sending");
                 char buffer[4096];
-                ssize_t size;
-                while ((size = ::recv(stream, buffer, sizeof(buffer), 0)) > 0) {
+                sys::IoSize size;
+                while ((size = sys::receiveBytes(stream, buffer, sizeof(buffer))) > 0) {
                     stored.append(buffer, static_cast<std::size_t>(size));
                 }
-                ::close(stream);
-                ::close(data);
+                sys::closeHandle(stream);
+                sys::closeHandle(data);
                 writeLine(control, "226 done");
             } else if (line == "QUIT") {
                 writeLine(control, "221 bye");
@@ -433,14 +426,14 @@ TEST(lab_upload_uses_anonymous_binary_passive_ftp) {
                 writeLine(control, "200 ok");
             }
         }
-        ::close(control);
+        sys::closeHandle(control);
     });
 
     LabProgramIdentity identity;
     std::string dsp = buildLabProgram("def start():\n    pass\n", identity);
     std::string digest = uploadLabProgram("127.0.0.1", dsp, DEFAULT_UPLOAD_NAME, 5.0, port);
     ftp.join();
-    ::close(server);
+    sys::closeHandle(server);
 
     CHECK_EQ(stored, dsp);
     CHECK_EQ(digest, md5Hex(dsp));

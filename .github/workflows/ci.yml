@@ -67,15 +67,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
       - name: Build and test C++ SDK
+        shell: bash
         run: |
           cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
-          cmake --build cpp/build
-          ctest --test-dir cpp/build --output-on-failure
+          cmake --build cpp/build --config Release
+          ctest --test-dir cpp/build -C Release --output-on-failure
 
   test:
     name: Python 3.10

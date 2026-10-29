@@ -45,9 +45,9 @@ tasks:
   cpp:test:
     desc: Build the C++ SDK and run its offline and loopback tests
     cmds:
-      - cmake -S cpp -B cpp/build
-      - cmake --build cpp/build
-      - ctest --test-dir cpp/build --output-on-failure
+      - cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
+      - cmake --build cpp/build --config Release
+      - ctest --test-dir cpp/build -C Release --output-on-failure
 
   scene:test:
     desc: Run real GPU scene and responsive rendering tests on a graphical desktop

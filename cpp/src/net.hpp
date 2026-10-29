@@ -1,7 +1,10 @@
-// Minimal POSIX socket helpers used by the SDK. Internal header.
+// Minimal UDP/TCP socket helpers used by the SDK (POSIX and Winsock). Internal
+// header; platform specifics live in socket_compat.hpp so that this header does
+// not pull <winsock2.h> into the rest of the SDK.
 #ifndef HANPPIE_NET_HPP
 #define HANPPIE_NET_HPP
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -10,6 +13,13 @@
 namespace hanppie {
 namespace net {
 
+// Same width as SOCKET on Windows and a file descriptor elsewhere.
+#ifdef _WIN32
+typedef std::uintptr_t NativeSocket;
+#else
+typedef int NativeSocket;
+#endif
+
 class UdpSocket {
 public:
     UdpSocket();
@@ -17,7 +27,7 @@ public:
 
     void open(const std::string& bindIp, std::uint16_t port, bool broadcast = false);
     void close();
-    bool isOpen() const { return fd_ >= 0; }
+    bool isOpen() const;
     void setReceiveBuffer(int bytes);
     void sendTo(const Bytes& data, const std::string& ip, std::uint16_t port);
     // Wait up to timeoutSeconds for a readable datagram.
@@ -28,7 +38,7 @@ public:
 private:
     UdpSocket(const UdpSocket&);
     UdpSocket& operator=(const UdpSocket&);
-    int fd_;
+    NativeSocket fd_;
 };
 
 class TcpSocket {
@@ -46,7 +56,7 @@ public:
 private:
     TcpSocket(const TcpSocket&);
     TcpSocket& operator=(const TcpSocket&);
-    int fd_;
+    NativeSocket fd_;
     double timeout_;
     std::string buffer_;
 };

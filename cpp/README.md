@@ -12,7 +12,7 @@
 | 视频 | 内置 PyAV 解码为帧 | 输出原始 H.264 分片（`Camera::readVideoChunk`），解码交给调用方 |
 | 机身麦克风 | 解码为 48 kHz PCM | 输出 Opus 包（`Camera::readAudioOpus`） |
 | 扬声器播放 | 输入 12 kHz PCM，内部编码 Opus | 输入已编码的 Opus 包（`media::packOpusPackets` + `Audio::playOpus`） |
-| 平台 | 跨平台 | Linux / macOS（POSIX socket），暂不支持 Windows |
+| 平台 | 跨平台 | Linux / macOS（POSIX socket）、Windows（Winsock，Vista 及以上） |
 
 编解码不内置是为了保持零第三方依赖；需要时可用 FFmpeg 或 libopus 处理上述原始数据。
 
@@ -25,6 +25,15 @@ cmake -S cpp -B cpp/build
 cmake --build cpp/build
 ctest --test-dir cpp/build --output-on-failure
 ```
+
+Windows 上 Visual Studio 生成器是多配置的，构建和测试需要指定配置：
+
+```bash
+cmake --build cpp/build --config Release
+ctest --test-dir cpp/build -C Release --output-on-failure
+```
+
+Windows 首次运行回环测试或连接机器人时，防火墙可能弹窗询问是否允许程序收发网络数据，需要允许。
 
 也可以在仓库根目录运行 `task cpp:test`。回环测试会在 127.0.0.1 上模拟机器人，需要 45678、56789、10607、10609 端口空闲。
 
