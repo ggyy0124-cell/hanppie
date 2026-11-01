@@ -420,7 +420,7 @@ double GimbalCtrl::get_axis_angle(int axis) {
 
 // ---- LedCtrl / blasters / media --------------------------------------------
 
-void LedCtrl::set(int comp, int r, int g, int b, int effect) {
+void LedCtrl::set_led(int comp, int r, int g, int b, int effect) {
     const char* name;
     if (effect == rm_define::effect_always_on) {
         name = "on";
@@ -440,14 +440,14 @@ void LedCtrl::set(int comp, int r, int g, int b, int effect) {
 }
 
 void LedCtrl::set_top_led(int comp, int r, int g, int b, int effect) {
-    set(comp & rm_define::armor_top_all, r, g, b, effect);
+    set_led(comp & rm_define::armor_top_all, r, g, b, effect);
 }
 
 void LedCtrl::set_bottom_led(int comp, int r, int g, int b, int effect) {
-    set(comp & rm_define::armor_bottom_all, r, g, b, effect);
+    set_led(comp & rm_define::armor_bottom_all, r, g, b, effect);
 }
 
-void LedCtrl::turn_off(int comp) { set(comp, 0, 0, 0, rm_define::effect_always_off); }
+void LedCtrl::turn_off(int comp) { set_led(comp, 0, 0, 0, rm_define::effect_always_off); }
 
 void LedCtrl::gun_led_on() { rm_.robot.setMuzzleLed(false, true); }
 

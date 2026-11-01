@@ -19,8 +19,13 @@ using namespace hanppie::ctrl;
 
 namespace {
 
-// Do Re Mi Fa Sol La Si in the first octave (rm_define media_sound_solmization_1C..1B).
-const std::uint32_t SCALE[7] = {0x107, 0x109, 0x10B, 0x10C, 0x10E, 0x110, 0x112};
+// Do Re Mi Fa Sol La Si in the first octave.
+const std::uint32_t SCALE[7] = {
+    rm_define::media_sound_solmization_1C, rm_define::media_sound_solmization_1D,
+    rm_define::media_sound_solmization_1E, rm_define::media_sound_solmization_1F,
+    rm_define::media_sound_solmization_1G, rm_define::media_sound_solmization_1A,
+    rm_define::media_sound_solmization_1B,
+};
 
 double now() { return hanppie::monotonicSeconds(); }
 
