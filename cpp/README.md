@@ -67,7 +67,7 @@ robot.disarm();
 robot.close();  // 析构时也会自动 close
 ```
 
-完整示例见 [`examples/drive.cpp`](examples/drive.cpp)（驾驶）、[`examples/lab.cpp`](examples/lab.cpp)（打包并上传 Lab 脚本）和下文的编程挑战卡示例。安全规则与 Python 版相同：未 `arm()` 时运动指令抛异常；速度和云台指令带租约，到期自动归零。机器人同一时间只接受一个控制端。
+完整示例见 [`examples/drive.cpp`](examples/drive.cpp)（驾驶）、[`examples/lab.cpp`](examples/lab.cpp)（打包并上传 Lab 脚本）和下文的编程挑战卡、预置脚本示例。安全规则与 Python 版相同：未 `arm()` 时运动指令抛异常；速度和云台指令带租约，到期自动归零。机器人同一时间只接受一个控制端。
 
 ## Lab 风格接口
 
@@ -100,7 +100,7 @@ robot.initialize();
 | --- | --- |
 | `chassis_ctrl` | `set_trans_speed`、`set_rotate_speed`、`move`、`move_with_time`、`move_with_distance`、`move_with_speed`、`rotate`、`rotate_with_speed`、`rotate_with_time`、`rotate_with_degree`、`move_and_rotate`、`stop`、`get_attitude` |
 | `gimbal_ctrl` | `set_rotate_speed`、`rotate`、`rotate_with_speed`、`rotate_with_degree`、`yaw_ctrl`、`pitch_ctrl`、`angle_ctrl`、`recenter`、`stop`、`get_axis_angle` |
-| `led_ctrl` | `set_top_led`、`set_bottom_led`、`turn_off`、`gun_led_on`、`gun_led_off` |
+| `led_ctrl` | `set_led`、`set_top_led`、`set_bottom_led`、`turn_off`、`gun_led_on`、`gun_led_off` |
 | `gun_ctrl` / `ir_blaster_ctrl` | `fire_once`（水弹 / 红外） |
 | `media_ctrl` | `play_sound`、`capture`、`record` |
 | `vision_ctrl` | `enable_detection`、`disable_detection`、`get_marker_detection_info`、`get_pose_detection_info`、`get_people_detection_info`、`get_line_detection_info`、`detect_marker_and_aim`；Lab 的 `cond_wait` / `check_condition` 对应 `cond_wait_marker`、`cond_wait_pose`、`cond_wait_people`、`check_marker`、`check_pose`、`check_people` |
@@ -115,7 +115,7 @@ robot.initialize();
 - **`detect_marker_and_aim` 是电脑端闭环**：视场换算（96° × 54°，瞄准点 0.5, 0.53）、容差 1° 和 5 秒时限照搬机内 Lab，转速沿用上面的云台增益，只在收到新的识别结果时调整。
 - **录像**：`record(record_on)` 需要最近 1.5 秒内的相机状态显示 SD 卡可用，会先切到录像模式，再等相机状态确认开始录像；`record_off` 等状态确认停止。`capture` 在相机处于录像模式时会先切回拍照模式。
 - 不支持的识别：Lab 的自动瞄准（`vision_detection_auto_aim`，在机器人上会接管云台）、行人跟随和机器人识别。
-- 尚未提供：装甲命中、拍手等事件回调，自由模式，跑马灯和单灯效果。
+- 尚未提供：装甲命中、拍手等事件回调，自由模式，云台正弦摆动（`compound_motion_ctrl`），跑马灯和单灯效果。
 
 标签编号（红心 8、骰子 2、箭头 4–7、数字 10–19、字母 20–45）和姿态编号取自机内 Lab 源码 `rm_define.py`，机内 Lab 和 App 读的是同一条识别推送；其中数字和字母编号与 App 客户端的定义一致；所有编号都还没有实机确认。
 
@@ -144,6 +144,28 @@ cpp/build/hanppie_challenges 192.168.2.1 0123abcd 6      # 运行第 6 张「瞄
 - 第 1、2 张的移动距离是按时间估算的，边长会有误差。
 
 剩下 8 张（3、5、7、8、12、20、26、30）需要自由模式、拍手/撞击/装甲命中事件、跑马灯或单灯控制，这些指令尚未经过 App 协议的抓包验证，暂不提供。
+
+## 预置脚本示例
+
+[`examples/presets.cpp`](examples/presets.cpp) 把 App 自带的 12 个预置脚本（`shared/src/commonMain/composeResources/files/presets/`）逐步改写成 C++，动作、灯色、音符和时长与原脚本一致，按脚本目录名运行：
+
+```bash
+cpp/build/hanppie_presets --list                                  # 列出全部预置脚本
+cpp/build/hanppie_presets 192.168.2.1 0123abcd bomb_squad         # 运行「拆弹倒计时」
+cpp/build/hanppie_presets 192.168.2.1 0123abcd friday_disco \
+  shared/src/commonMain/composeResources/files/presets/friday_disco/audio/0_friday_night.opus
+```
+
+与原脚本的差别：
+
+- 原脚本开头切到自由模式（云台和底盘各自转动），C++ 没有对应指令，在 App 遥控模式下运行；云台转动时底盘是否跟随需要实机确认。
+- 「周五狂欢舞」的跑马灯改为闪烁。背景音乐要传入原脚本的 Opus 文件（仓库用 Git LFS 保存，先 `git lfs pull`），不传则不放音乐。原脚本的音乐随 Lab 脚本一起装到机器人上；这里走扬声器上传，单次最多 64 KB，88 秒的音乐（136 KB）分 3 段依次上传播放，段间有约半秒停顿，后面的动作会和音乐逐渐错开。分段播放尚未在实机上验证。
+- 「音乐洒水车」的云台正弦摆动（周期 4.4 秒、左右各 35°）在电脑端按正弦曲线持续调整云台转速来模拟，不如机内执行平滑。
+- 「好奇哨兵」最后的提示音原脚本会等播完，这里固定等 1 秒。
+- 底盘转速、云台转速超过 App 控制上限（150°/s、120°/s）的取值会被截断，「周五狂欢舞」的转圈会比原脚本慢。
+- 指令经 Wi-Fi 发送，跟着音乐节拍的脚本可能略有不同步。「周五狂欢舞」有约 50 次小角度云台转动，每次都在电脑端按遥测闭环等到位，在模拟机器人上整段约 150 秒，明显长于 88 秒的音乐，实机时长待确认。
+
+12 个示例只在本机用测试里的模拟机器人完整跑过，**未连接实机**。
 
 ## 模块对应
 

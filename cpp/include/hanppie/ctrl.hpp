@@ -68,8 +68,42 @@ const std::uint32_t media_sound_scanning = 0x103;
 const std::uint32_t media_sound_recognize_success = 0x104;
 const std::uint32_t media_sound_gimbal_rotate = 0x105;
 const std::uint32_t media_sound_count_down = 0x106;
-// Musical notes 1C..3B are 0x107..0x12A, as in Lab.
+// Musical notes, three octaves of semitones from 1C (0x107) to 3B (0x12A).
 const std::uint32_t media_sound_solmization_1C = 0x107;
+const std::uint32_t media_sound_solmization_1CSharp = 0x108;
+const std::uint32_t media_sound_solmization_1D = 0x109;
+const std::uint32_t media_sound_solmization_1DSharp = 0x10A;
+const std::uint32_t media_sound_solmization_1E = 0x10B;
+const std::uint32_t media_sound_solmization_1F = 0x10C;
+const std::uint32_t media_sound_solmization_1FSharp = 0x10D;
+const std::uint32_t media_sound_solmization_1G = 0x10E;
+const std::uint32_t media_sound_solmization_1GSharp = 0x10F;
+const std::uint32_t media_sound_solmization_1A = 0x110;
+const std::uint32_t media_sound_solmization_1ASharp = 0x111;
+const std::uint32_t media_sound_solmization_1B = 0x112;
+const std::uint32_t media_sound_solmization_2C = 0x113;
+const std::uint32_t media_sound_solmization_2CSharp = 0x114;
+const std::uint32_t media_sound_solmization_2D = 0x115;
+const std::uint32_t media_sound_solmization_2DSharp = 0x116;
+const std::uint32_t media_sound_solmization_2E = 0x117;
+const std::uint32_t media_sound_solmization_2F = 0x118;
+const std::uint32_t media_sound_solmization_2FSharp = 0x119;
+const std::uint32_t media_sound_solmization_2G = 0x11A;
+const std::uint32_t media_sound_solmization_2GSharp = 0x11B;
+const std::uint32_t media_sound_solmization_2A = 0x11C;
+const std::uint32_t media_sound_solmization_2ASharp = 0x11D;
+const std::uint32_t media_sound_solmization_2B = 0x11E;
+const std::uint32_t media_sound_solmization_3C = 0x11F;
+const std::uint32_t media_sound_solmization_3CSharp = 0x120;
+const std::uint32_t media_sound_solmization_3D = 0x121;
+const std::uint32_t media_sound_solmization_3DSharp = 0x122;
+const std::uint32_t media_sound_solmization_3E = 0x123;
+const std::uint32_t media_sound_solmization_3F = 0x124;
+const std::uint32_t media_sound_solmization_3FSharp = 0x125;
+const std::uint32_t media_sound_solmization_3G = 0x126;
+const std::uint32_t media_sound_solmization_3GSharp = 0x127;
+const std::uint32_t media_sound_solmization_3A = 0x128;
+const std::uint32_t media_sound_solmization_3ASharp = 0x129;
 const std::uint32_t media_sound_solmization_3B = 0x12A;
 
 // Detector masks. Lab's auto_aim, people_follow and car detectors are not
@@ -186,6 +220,8 @@ public:
     explicit LedCtrl(RobotCtrl& rm) : rm_(rm) {}
 
     // comp is an armor_* mask; effect is effect_always_on/off, breath or flash.
+    // The marquee effect is not available over the App protocol yet.
+    void set_led(int comp, int r, int g, int b, int effect);
     void set_top_led(int comp, int r, int g, int b, int effect);
     void set_bottom_led(int comp, int r, int g, int b, int effect);
     void turn_off(int comp);
@@ -193,7 +229,6 @@ public:
     void gun_led_off();
 
 private:
-    void set(int comp, int r, int g, int b, int effect);
     RobotCtrl& rm_;
 };
 
