@@ -78,6 +78,8 @@ robot.close();  // 析构时也会自动 close
 - `chassis.driveSpeed(x, y, z, leaseSeconds)` 和 `gimbal.driveSpeed(pitch, yaw, leaseSeconds)` 在租约期内持续发送该速度，到期回到零速保持，默认租约 250 ms；底盘速度全为零（包括 `-0.0`）时等同 `stop()`。底盘速度单位为 m/s（前、右）和 °/s（顺时针），云台为 °/s。
 - 速度超过 App 的上限（底盘 1 m/s、150°/s，云台 120°/s）时被截断，非有限值抛 `std::invalid_argument`；没有 `arm()` 时抛 `std::runtime_error`。
 - `robot.stop()` 同时停底盘和云台，并取消尚未结束的红外发射；`disarm()` 也会调用它。
+- `disarm()` 和运动指令互斥：`disarm()` 返回后，其他线程不会再让机器人动起来。
+- 与 App 相同，超过 500 ms 没有收到机器人的任何数据时，运动和红外指令会先停下底盘和云台，再抛 `std::runtime_error`；重新收到数据后可以继续下发。`RobotCtrl` 的后台续发线程因此也会在失联 500 ms 内停车。
 
 租约、零速保持和停车都由电脑端的进程执行。进程被强杀、断网或断电时，电脑不再发送任何指令，机器人是否会在运动中自行停下取决于固件，**没有经过实机验证**；实机运行时应留人在旁，随时可以切断电源。
 

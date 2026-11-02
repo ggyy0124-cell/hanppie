@@ -36,6 +36,7 @@ AppConnection::AppConnection(const std::string& robotIp, const std::string& appi
       debug_(debug),
       connected_(false),
       stop_(false),
+      lastReceivedAt_(0.0),
       sequence_(protocol::INITIAL_DUSS_SEQUENCE),
       hasBattery_(false),
       battery_(0),
@@ -120,6 +121,7 @@ bool AppConnection::initialize(double timeoutSeconds) {
     socket_->setReceiveBuffer(4 * 1024 * 1024);
     openOuterSession(timeoutSeconds < 5.0 ? timeoutSeconds : 5.0);
     sendConnectionSetup();
+    lastReceivedAt_ = monotonicSeconds();  // the robot has just answered the session
     connected_ = true;
     stop_ = false;
     thread_ = std::thread(&AppConnection::receiveLoop, this);
@@ -427,10 +429,19 @@ void AppConnection::receiveLoop() {
     }
 }
 
+double AppConnection::secondsSinceReceive() const {
+    return monotonicSeconds() - lastReceivedAt_.load();
+}
+
 void AppConnection::handlePacket(const Bytes& data) {
     bool video;
     {
         std::lock_guard<std::recursive_mutex> lock(txLock_);
+        const Bytes& session = envelope_.session;
+        if (data.size() >= 12 && session.size() == 2 && data[2] == session[0] &&
+            data[3] == session[1]) {
+            lastReceivedAt_ = monotonicSeconds();
+        }
         video = protocol::isVideoPacket(data, envelope_.session);
         if (!video) envelope_.observe(data);
     }

@@ -110,6 +110,8 @@ public:
 
     bool battery(int& out) const;
     bool connected() const { return connected_; }
+    // Seconds since the last packet of the active session arrived from the robot.
+    double secondsSinceReceive() const;
     std::string robotIp() const;
     std::string appid() const { return appid_; }
     AppConnectionInfo info() const;
@@ -160,6 +162,7 @@ private:
     std::unique_ptr<net::UdpSocket> socket_;
     std::atomic<bool> connected_;
     std::atomic<bool> stop_;
+    std::atomic<double> lastReceivedAt_;
     std::thread thread_;
 
     mutable std::recursive_mutex txLock_;

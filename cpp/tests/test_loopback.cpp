@@ -67,6 +67,7 @@ public:
           controlFd_(udpSocket(ROBOT_CONTROL_PORT)),
           stop_(false),
           sequence_(1),
+          heartbeat_(true),
           hasPeer_(false) {
         thread_ = std::thread(&FakeRobot::run, this);
     }
@@ -120,6 +121,10 @@ public:
         sendTo(controlFd_, packet, peer_);
     }
 
+    // Like the real robot's telemetry pushes, keep the link fresh with a Wi-Fi RSSI
+    // push every 100 ms once a session exists; turn it off to simulate a silent robot.
+    void setHeartbeat(bool enabled) { heartbeat_ = enabled; }
+
     void pushVideo(const Bytes& chunk) {
         Bytes packet(20, 0);
         std::lock_guard<std::mutex> lock(lock_);
@@ -133,7 +138,17 @@ public:
 private:
     void run() {
         Bytes buffer(65535);
+        std::chrono::steady_clock::time_point nextBeat = std::chrono::steady_clock::now();
         while (!stop_) {
+            if (heartbeat_ && std::chrono::steady_clock::now() >= nextBeat) {
+                nextBeat = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+                bool ready;
+                {
+                    std::lock_guard<std::mutex> lock(lock_);
+                    ready = hasPeer_ && session_.size() == 2;
+                }
+                if (ready) pushFrom(HOST_WIFI, ATTR_NO_ACK, CMDSET_WIFI, CMD_WIFI_AP_PUSH_RSSI, Bytes(1, 0xC4));
+            }
             pollfd items[2];
             items[0].fd = appFd_;
             items[1].fd = controlFd_;
@@ -216,6 +231,7 @@ private:
     sys::Handle controlFd_;
     std::atomic<bool> stop_;
     std::uint16_t sequence_;
+    std::atomic<bool> heartbeat_;
     std::thread thread_;
     std::mutex lock_;
     bool hasPeer_;
@@ -614,6 +630,38 @@ TEST(leaving_control_mode_stops_motion_and_releases_the_slots) {
     CHECK(countMotion(reentered, isChassisStop, idleChassisPayload()) >= 2);
     CHECK(countMotion(reentered, isGimbalSpeed, idleGimbalPayload()) >= 2);
     CHECK(onlyIdleHold(reentered));
+    robot.close();
+}
+
+TEST(silent_robot_stops_motion_like_the_app) {
+    FakeRobot fake;
+    Robot robot("127.0.0.1", APPID);
+    robot.connection.suspendIdleKeepalive = true;
+    CHECK(robot.initialize("sta", "udp", 5.0));
+    robot.enterControlMode();
+    robot.arm();
+    robot.chassis.driveSpeed(0.3, 0, 0, 5.0);
+    robot.gimbal.driveSpeed(10, 10, 5.0);
+
+    // After 500 ms without any data, the next drive call stops both and throws.
+    fake.setHeartbeat(false);
+    sleepMs(600);
+    CHECK_THROWS(robot.chassis.driveSpeed(0.3, 0, 0, 5.0), std::runtime_error);
+    CHECK_THROWS(robot.fireInfrared(), std::runtime_error);
+    std::size_t stoppedMark = fake.mark();
+    sleepMs(100);
+    std::vector<Captured> stopped = fake.since(stoppedMark);
+    CHECK(countMotion(stopped, isChassisStop, idleChassisPayload()) >= 2);
+    CHECK(countMotion(stopped, isGimbalSpeed, idleGimbalPayload()) >= 2);
+    CHECK(onlyIdleHold(stopped));
+
+    // Motion is accepted again once the robot is heard from.
+    fake.setHeartbeat(true);
+    sleepMs(200);
+    std::size_t resumedMark = fake.mark();
+    robot.gimbal.driveSpeed(10, 10, 5.0);
+    sleepMs(100);
+    CHECK(countMotion(fake.since(resumedMark), isGimbalSpeed, buildGimbalSpeedPayload(10, 10)) >= 1);
     robot.close();
 }
 

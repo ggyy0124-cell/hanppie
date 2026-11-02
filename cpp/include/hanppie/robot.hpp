@@ -128,6 +128,8 @@ class Robot;
 // the receive loop sends one command per 50 Hz tick to each, zero motion when idle
 // and the commanded speed while the lease of the latest drive call is fresh. Both
 // require arm() to move; stop() is always safe and a no-op outside control mode.
+// Like the App, a drive call stops both and throws std::runtime_error once no data
+// has arrived from the robot for 500 ms.
 class Chassis {
 public:
     explicit Chassis(Robot& robot) : robot_(robot) {}
@@ -239,10 +241,14 @@ private:
     // Chassis and gimbal each own one periodic slot of the connection for as long
     // as control mode lasts. setMotion ignores calls outside control mode, so a
     // late stop() cannot revive a slot that exitControlMode() has cleared; with a
-    // lease the slot returns to idle once the lease lapses.
+    // lease the slot returns to idle once the lease lapses. The leased form moves
+    // the robot: it rechecks arm() under motionLock_, so it cannot outlive a
+    // concurrent disarm(), and requires a fresh link.
     void setMotion(const char* slot, const PeriodicDuss& command);
     void setMotion(const char* slot, const PeriodicDuss& command, double leaseSeconds,
                    const PeriodicDuss& idle);
+    // Stop and throw unless the robot has sent data within the last 500 ms.
+    void requireFreshLink();
     void handleDuss(const protocol::DussFrame& frame);
     CameraStatus freshCameraStatus() const;
     void setCameraMode(int mode);
@@ -250,7 +256,7 @@ private:
 
     std::atomic<bool> controlMode_;
     std::atomic<bool> armed_;
-    std::mutex motionLock_;  // orders controlMode_ changes against slot updates
+    std::mutex motionLock_;  // orders controlMode_ and armed_ changes against motion updates
     mutable std::mutex telemetryLock_;
     std::condition_variable telemetryCondition_;
     bool hasOdometry_;
