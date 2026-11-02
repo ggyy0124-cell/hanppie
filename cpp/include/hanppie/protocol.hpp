@@ -81,7 +81,6 @@ const std::uint8_t CMD_SET_ZOOM_PARAM = 0x34;
 
 // Gimbal (cmdset 0x04)
 const std::uint8_t CMD_GIMBAL_EXT_CTRL_ACCEL = 0x0C;
-const std::uint8_t CMD_GIMBAL_ROTATE_SPEED = 0x69;
 
 // Wi-Fi (cmdset 0x07)
 const std::uint8_t CMD_WIFI_AP_PUSH_RSSI = 0x09;

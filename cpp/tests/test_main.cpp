@@ -1,8 +1,10 @@
-// Offline unit tests for the Hanppie C++ SDK. Vectors either mirror tests/ in
-// the Python package or come from golden_vectors.inc generated from it.
+// Offline unit tests for the Hanppie C++ SDK. Vectors mirror tests/ in the Python
+// package, come from golden_vectors.inc generated from it, or (motion payloads)
+// from the hardware-verified robot-core tests.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <set>
 #include <cstring>
 #include <functional>
@@ -321,15 +323,37 @@ TEST(truncated_working_device_push_is_rejected) {
     CHECK(!decodeCapabilities(productFrame(0x12, fromHex("00"), true, 0x40), capabilities));
 }
 
-TEST(payload_builders_match_python_reference) {
-    for (std::size_t i = 0; i < sizeof(CHASSIS_VECTORS) / sizeof(CHASSIS_VECTORS[0]); ++i) {
-        const ChassisVector& v = CHASSIS_VECTORS[i];
-        CHECK_EQ(toHex(buildChassisControlPayload(v.x, v.y, v.z)), std::string(v.hex));
-    }
-    for (std::size_t i = 0; i < sizeof(GIMBAL_VECTORS) / sizeof(GIMBAL_VECTORS[0]); ++i) {
-        const GimbalVector& v = GIMBAL_VECTORS[i];
-        CHECK_EQ(toHex(buildGimbalSpeedPayload(v.pitch, v.yaw)), std::string(v.hex));
-    }
+// The first two vectors of each builder are those of robot-core
+// commonTest/.../RemoteControlTest.kt, which the S1 accepts in the App.
+TEST(motion_payload_builders_match_the_app) {
+    CHECK_EQ(toHex(buildChassisSpeedPayload(0.5, -0.5, 60.0)), std::string("0000003f000000bf00007042"));
+    CHECK_EQ(toHex(buildChassisSpeedPayload(0, 0, 0)), std::string("000000000000000000000000"));
+    CHECK_EQ(toHex(buildGimbalSpeedPayload(-60, 60)), std::string("58020000a8fddc"));
+    CHECK_EQ(toHex(buildGimbalSpeedPayload(0, 0)), std::string("000000000000dc"));
+
+    // Limits are 1 m/s, 1 m/s and 150 deg/s for the chassis, 120 deg/s for the gimbal.
+    CHECK_EQ(toHex(buildChassisSpeedPayload(1, -1, 150)), std::string("0000803f000080bf00001643"));
+    CHECK_EQ(toHex(buildChassisSpeedPayload(2, -3, 400)), toHex(buildChassisSpeedPayload(1, -1, 150)));
+    CHECK_EQ(toHex(buildChassisSpeedPayload(-2, 3, -400)), toHex(buildChassisSpeedPayload(-1, 1, -150)));
+    CHECK_EQ(toHex(buildGimbalSpeedPayload(120, -120)), std::string("50fb0000b004dc"));
+    CHECK_EQ(toHex(buildGimbalSpeedPayload(200, -200)), toHex(buildGimbalSpeedPayload(120, -120)));
+
+    // Gimbal rates are 0.1 deg/s steps; ties round toward positive infinity like
+    // Kotlin's roundToInt(), not to even like Python's round().
+    CHECK_EQ(toHex(buildGimbalSpeedPayload(0, 0.25)), std::string("030000000000dc"));
+    CHECK_EQ(toHex(buildGimbalSpeedPayload(0, -0.25)), std::string("feff00000000dc"));
+    CHECK_EQ(toHex(buildGimbalSpeedPayload(12.3, -45.6)), std::string("38fe00007b00dc"));
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    CHECK_THROWS(buildChassisSpeedPayload(nan, 0, 0), std::invalid_argument);
+    CHECK_THROWS(buildChassisSpeedPayload(0, inf, 0), std::invalid_argument);
+    CHECK_THROWS(buildChassisSpeedPayload(0, 0, -inf), std::invalid_argument);
+    CHECK_THROWS(buildGimbalSpeedPayload(nan, 0), std::invalid_argument);
+    CHECK_THROWS(buildGimbalSpeedPayload(0, inf), std::invalid_argument);
+}
+
+TEST(led_payload_builder_matches_python_reference) {
     for (std::size_t i = 0; i < sizeof(LED_VECTORS) / sizeof(LED_VECTORS[0]); ++i) {
         const LedVector& v = LED_VECTORS[i];
         CHECK_EQ(toHex(buildLedPayload(v.component, v.red, v.green, v.blue, v.effect)),

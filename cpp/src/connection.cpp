@@ -11,6 +11,10 @@ namespace hanppie {
 namespace {
 
 const std::size_t RECENT_FRAME_LIMIT = 256;
+// Control frames and periodic commands go out at 50 Hz, the mode keepalive every
+// 800 ms, matching robot-core AppSession.
+const double CONTROL_PERIOD_SECONDS = 0.02;
+const double KEEPALIVE_PERIOD_SECONDS = 0.8;
 
 void sleepSeconds(double seconds) {
     std::this_thread::sleep_for(std::chrono::microseconds(static_cast<long long>(seconds * 1e6)));
@@ -290,19 +294,21 @@ void AppConnection::setPeriodicDuss(const std::string& name, const PeriodicDuss&
     std::lock_guard<std::mutex> lock(stateLock_);
     PeriodicEntry entry;
     entry.command = command;
-    entry.hasDeadline = false;
+    entry.hasLease = false;
     entry.deadline = 0;
+    entry.fallback = command;
     periodicDuss_[name] = entry;
 }
 
 void AppConnection::setPeriodicDuss(const std::string& name, const PeriodicDuss& command,
-                                    double leaseSeconds) {
+                                    double leaseSeconds, const PeriodicDuss& fallback) {
     if (leaseSeconds <= 0) throw std::invalid_argument("leaseSeconds must be positive");
     std::lock_guard<std::mutex> lock(stateLock_);
     PeriodicEntry entry;
     entry.command = command;
-    entry.hasDeadline = true;
+    entry.hasLease = true;
     entry.deadline = monotonicSeconds() + leaseSeconds;
+    entry.fallback = fallback;
     periodicDuss_[name] = entry;
 }
 
@@ -325,14 +331,14 @@ AppConnection::ControlTick AppConnection::controlTickState(double now) {
     }
     ControlTick tick;
     tick.payload = controlPayload_;
-    std::map<std::string, PeriodicEntry>::iterator it = periodicDuss_.begin();
-    while (it != periodicDuss_.end()) {
-        if (it->second.hasDeadline && now >= it->second.deadline) {
-            periodicDuss_.erase(it++);
-        } else {
-            tick.periodic.push_back(it->second.command);
-            ++it;
+    for (std::map<std::string, PeriodicEntry>::iterator it = periodicDuss_.begin();
+         it != periodicDuss_.end(); ++it) {
+        PeriodicEntry& entry = it->second;
+        if (entry.hasLease && now >= entry.deadline) {
+            entry.command = entry.fallback;
+            entry.hasLease = false;
         }
+        tick.periodic.push_back(entry.command);
     }
     return tick;
 }
@@ -391,7 +397,7 @@ void AppConnection::receiveLoop() {
                     const PeriodicDuss& c = tick.periodic[i];
                     sendDuss(c.sender, c.receiver, c.attr, c.cmdset, c.cmdid, c.payload);
                 }
-                nextControl = now + 0.02;
+                nextControl = now + CONTROL_PERIOD_SECONDS;
             }
             if (now >= nextKeepalive && !suspendIdleKeepalive) {
                 Bytes keepalive;
@@ -407,7 +413,7 @@ void AppConnection::receiveLoop() {
                     sendDuss(protocol::HOST_MOBILE, protocol::HOST_WIFI, protocol::ATTR_NEED_ACK,
                              protocol::CMDSET_WIFI, protocol::CMD_WIFI_AP_KEEPALIVE);
                 }
-                nextKeepalive = now + 1.0;
+                nextKeepalive = now + KEEPALIVE_PERIOD_SECONDS;
             }
         }
     } catch (const std::exception& error) {

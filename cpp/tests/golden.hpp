@@ -12,14 +12,6 @@ struct GoldenEntry {
     const char* payload;
     const char* flags;
 };
-struct ChassisVector {
-    double x, y, z;
-    const char* hex;
-};
-struct GimbalVector {
-    double pitch, yaw;
-    const char* hex;
-};
 struct LedVector {
     std::uint32_t component;
     int red, green, blue;

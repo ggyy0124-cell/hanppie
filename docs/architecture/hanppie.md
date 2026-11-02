@@ -357,7 +357,7 @@ flowchart LR
     ARM -- " 未授权 " --> REJECT["拒绝执行并下发零速"]
     ARM -- " 已授权 " --> CMD_SEND["下发 50Hz 信令"]
     CMD_SEND --> CHASSIS["底盘: DUSS 3F:21 (非零速度)<br/>或 3F:20 (全零制动)"]
-    CMD_SEND --> GIMBAL["云台: DUSS 04:0C / 04:69"]
+    CMD_SEND --> GIMBAL["云台: DUSS 04:0C"]
 ```
 
 - **镜头坐标系联动**：当云台相对底盘夹角为 $\theta$ 时，用户输入的平移向量经过三角投影转换为底盘物理坐标系速度：

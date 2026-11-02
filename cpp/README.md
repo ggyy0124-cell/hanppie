@@ -1,16 +1,17 @@
 # Hanppie C++ SDK
 
-`src/hanppie` Python 直控库的 C++11 移植：走 RoboMaster S1 出厂开放的 App 协议端口，提供 AppID 认领、App 会话、50 Hz 控制循环、底盘/云台/灯效/音效控制、遥测、音视频流和 Lab 脚本上传。协议行为与 Python 版逐项对应，Python 版是唯一参考实现；两者不互相依赖。
+`src/hanppie` Python 直控库的 C++11 移植：走 RoboMaster S1 出厂开放的 App 协议端口，提供 AppID 认领、App 会话、50 Hz 控制循环、底盘/云台/灯效/音效控制、遥测、音视频流和 Lab 脚本上传。连接序列、遥控模式进出表和灯效载荷与 Python 版逐字节比对；底盘和云台的运动路径以已在实机验证的 App（`packages/robot-core`）为准，与 Python 版不同，见下文「运动与安全」。两者不互相依赖。
 
 当前版本 **0.0.2**（`HANPPIE_VERSION`，定义在 `include/hanppie/hanppie.hpp`，CMake 项目版本从这里读取）。
 
-> 当前状态：离线单测和本机回环集成测试通过，控制报文与 Python 版逐字节比对一致；**尚未连接实机验证**。
+> 当前状态：离线单测和本机回环集成测试通过。运动指令载荷与 App 的测试向量逐字节一致，遥控模式进出表与 App 逐行核对一致。App 本身经过实机验证，但这份 C++ 实现的运动路径**尚未连接实机验证**。
 
 ## 与 Python 版的范围差异
 
 | 能力 | Python `hanppie` | C++ SDK |
 | --- | --- | --- |
 | 协议、会话、控制、遥测、Lab 上传 | 支持 | 支持，API 一一对应 |
+| 底盘与云台运动 | 底盘走控制帧的摇杆载荷，云台走 `04:69` | 与 App 一致，不沿用 Python 版的路径；没有 `drive_wheels`（独立轮速） |
 | 视频 | 内置 PyAV 解码为帧 | 输出原始 H.264 分片（`Camera::readVideoChunk`），解码交给调用方 |
 | 机身麦克风 | 解码为 48 kHz PCM | 输出 Opus 包（`Camera::readAudioOpus`） |
 | 扬声器播放 | 输入 12 kHz PCM，内部编码 Opus | 输入已编码的 Opus 包（`media::packOpusPackets` + `Audio::playOpus`） |
@@ -61,13 +62,24 @@ robot.setLed("all", 0, 255, 0);
 
 // 确认地面与射界安全后才允许机械动作。
 robot.arm();
-robot.chassis.driveSpeed(0.1, 0.0, 0.0, 0.25);  // 250 ms 租约，不续发自动归零
+robot.chassis.driveSpeed(0.1, 0.0, 0.0, 0.25);  // 250 ms 租约，不续发就回到零速保持
 // ...
 robot.disarm();
 robot.close();  // 析构时也会自动 close
 ```
 
-完整示例见 [`examples/drive.cpp`](examples/drive.cpp)（驾驶）、[`examples/lab.cpp`](examples/lab.cpp)（打包并上传 Lab 脚本）和下文的编程挑战卡、预置脚本示例。安全规则与 Python 版相同：未 `arm()` 时运动指令抛异常；速度和云台指令带租约，到期自动归零。机器人同一时间只接受一个控制端。
+完整示例见 [`examples/drive.cpp`](examples/drive.cpp)（驾驶）、[`examples/lab.cpp`](examples/lab.cpp)（打包并上传 Lab 脚本）和下文的编程挑战卡、预置脚本示例。机器人同一时间只接受一个控制端。
+
+## 运动与安全
+
+底盘和云台的运动指令、遥控模式切换和持续发送方式与 App 一致，协议细节见[遥控操纵与安全联动](../docs/architecture/hanppie.md#134-遥控操纵镜头坐标系与安全联动)：
+
+- `enterControlMode()` 走完 App 的遥控模式进入序列，随后底盘和云台以 50 Hz 持续发送零速保持；`exitControlMode()` 先停车再退出，之后不再发送运动指令。没有进入遥控模式时，运动指令不会下发。
+- `chassis.driveSpeed(x, y, z, leaseSeconds)` 和 `gimbal.driveSpeed(pitch, yaw, leaseSeconds)` 在租约期内持续发送该速度，到期回到零速保持，默认租约 250 ms；底盘速度全为零（包括 `-0.0`）时等同 `stop()`。底盘速度单位为 m/s（前、右）和 °/s（顺时针），云台为 °/s。
+- 速度超过 App 的上限（底盘 1 m/s、150°/s，云台 120°/s）时被截断，非有限值抛 `std::invalid_argument`；没有 `arm()` 时抛 `std::runtime_error`。
+- `robot.stop()` 同时停底盘和云台，并取消尚未结束的红外发射；`disarm()` 也会调用它。
+
+租约、零速保持和停车都由电脑端的进程执行。进程被强杀、断网或断电时，电脑不再发送任何指令，机器人是否会在运动中自行停下取决于固件，**没有经过实机验证**；实机运行时应留人在旁，随时可以切断电源。
 
 ## Lab 风格接口
 
@@ -109,8 +121,8 @@ robot.initialize();
 
 - **转角度是电脑端闭环**：`rotate_with_degree`、`yaw_ctrl`、`pitch_ctrl`、`angle_ctrl`、`recenter` 根据 10 Hz 的云台遥测和底盘姿态遥测调整转速，增益与容差沿用 App 已验证的云台回中逻辑（每度 3°/s，容差 1°）。遥测中断超过 0.5 秒即停止并抛异常。
 - **`move_with_distance` 是开环估算**：App 会话里没有经过验证的位置数据，按「距离 ÷ 速度」计时运行，误差明显大于 Lab。Lab 使用机内位置指令，该指令能否经 App 协议下发需要实机抓包确认。
-- **速度上限更低**：App 控制帧限制底盘 1 m/s、150°/s，云台 120°/s；超过的 Lab 取值会被截断，超出 Lab 自身范围的取值抛 `std::invalid_argument`。
-- **持续动作由后台线程续发**：`move`、`rotate` 等持续动作在 `RobotCtrl` 内每 50 ms 续租一次，直到 `stop()` 或析构；程序崩溃或断连时仍由 SDK 的 250 ms 租约归零。
+- **速度上限更低**：App 的遥控指令限制底盘 1 m/s、150°/s，云台 120°/s；超过的 Lab 取值会被截断，超出 Lab 自身范围的取值抛 `std::invalid_argument`。
+- **持续动作由后台线程续发**：`move`、`rotate` 等持续动作在 `RobotCtrl` 内每 50 ms 续租一次，直到 `stop()` 或析构；续租停止后 250 ms 租约到期，回到零速保持。进程被强杀或断网时的行为见上文「运动与安全」。
 - **视觉识别在机器人里做，反应在电脑上做**：识别结果由机器人推送给电脑，`cond_wait_*`、`check_*` 和 `detect_marker_and_aim` 在电脑上判断，反应会多一个 Wi-Fi 往返的延迟。同一时间只开一种识别（与 App 一致），`enable_detection` 换一种识别时会先关掉当前的；如果机器人上已有别的程序开着识别，启动会失败而不会强行关掉它。超过 1 秒没有新结果视为没识别到。
 - **`detect_marker_and_aim` 是电脑端闭环**：视场换算（96° × 54°，瞄准点 0.5, 0.53）、容差 1° 和 5 秒时限照搬机内 Lab，转速沿用上面的云台增益，只在收到新的识别结果时调整。
 - **录像**：`record(record_on)` 需要最近 1.5 秒内的相机状态显示 SD 卡可用，会先切到录像模式，再等相机状态确认开始录像；`record_off` 等状态确认停止。`capture` 在相机处于录像模式时会先切回拍照模式。
@@ -162,7 +174,7 @@ cpp/build/hanppie_presets 192.168.2.1 0123abcd friday_disco \
 - 「周五狂欢舞」的跑马灯改为闪烁。背景音乐要传入原脚本的 Opus 文件（仓库用 Git LFS 保存，先 `git lfs pull`），不传则不放音乐。原脚本的音乐随 Lab 脚本一起装到机器人上；这里走扬声器上传，单次最多 64 KB，88 秒的音乐（136 KB）分 3 段依次上传播放，段间有约半秒停顿，后面的动作会和音乐逐渐错开。分段播放尚未在实机上验证。
 - 「音乐洒水车」的云台正弦摆动（周期 4.4 秒、左右各 35°）在电脑端按正弦曲线持续调整云台转速来模拟，不如机内执行平滑。
 - 「好奇哨兵」最后的提示音原脚本会等播完，这里固定等 1 秒。
-- 底盘转速、云台转速超过 App 控制上限（150°/s、120°/s）的取值会被截断，「周五狂欢舞」的转圈会比原脚本慢。
+- 底盘转速、云台转速超过 App 遥控上限（150°/s、120°/s）的取值会被截断，「周五狂欢舞」的转圈会比原脚本慢。
 - 指令经 Wi-Fi 发送，跟着音乐节拍的脚本可能略有不同步。「周五狂欢舞」有约 50 次小角度云台转动，每次都在电脑端按遥测闭环等到位，在模拟机器人上整段约 150 秒，明显长于 88 秒的音乐，实机时长待确认。
 
 12 个示例只在本机用测试里的模拟机器人完整跑过，**未连接实机**。
@@ -191,10 +203,14 @@ flowchart TD
 
 可选返回值（Python 的 `None`）在 C++ 中统一为 `bool` 返回值加输出参数；超时抛 `hanppie::TimeoutError`，设备拒绝抛 `hanppie::RequestRejected`（均派生自 `std::runtime_error`）。
 
-## 与 Python 版保持同步
+## 与 Python 版和 App 保持同步
 
-抓包得来的固定序列和载荷编码以 Python 版为准。`tests/golden_vectors.inc` 由 Python 版生成，修改 `src/hanppie` 的协议或载荷后重新生成并跑测试：
+连接序列、遥控模式进出表和灯效载荷以 Python 版为参照。`tests/golden_vectors.inc` 由 Python 版生成，修改 `src/hanppie` 的这些协议或载荷后重新生成并跑测试：
 
 ```bash
 uv run python cpp/tests/generate_golden.py > cpp/tests/golden_vectors.inc
 ```
+
+遥控模式的效果表和退出表中，C++ 随 App 使用 `0000` flags，Python 版沿用默认 flags；Python 版退出时多发的云台零速（`04:69`）属于它自己的运动路径，生成器不录入。测试对这些行显式使用 App 的 flags，再比对其余字段。
+
+运动指令不在黄金向量里，载荷和发送序列以 App 为准：载荷期望值取自 `packages/robot-core` 的 `RemoteControlTest.kt`，见 `tests/test_main.cpp` 的 `motion_payload_builders_match_the_app`；进入遥控后的发送序列、租约回落和停车见 `tests/test_loopback.cpp` 的 `loopback_session_matches_the_app_flow` 和 `leaving_control_mode_stops_motion_and_releases_the_slots`。App 的运动路径变化时同步更新这些测试和实现。

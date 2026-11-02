@@ -92,7 +92,7 @@ finally:
 
 ## C++
 
-`cpp/` 是 Python 直控库的 C++11 移植，使用 CMake 构建，无第三方依赖。构建、用法和与 Python 版的差异见 [C++ SDK](../../cpp/README.md)。
+`cpp/` 是 C++11 直控 SDK，使用 CMake 构建，无第三方依赖。连接与灯效参照 Python 直控库，底盘和云台运动路径以已在实机验证的 App 为准。构建、用法和与 Python 版的差异见 [C++ SDK](../../cpp/README.md)。
 
 ## 验证
 

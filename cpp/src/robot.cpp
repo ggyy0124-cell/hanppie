@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <thread>
 
 namespace hanppie {
@@ -59,11 +60,24 @@ T clamp(T value, T low, T high) {
     return value < low ? low : (value > high ? high : value);
 }
 
-// Python round(): ties to even under the default floating-point environment.
-long roundHalfEven(double value) { return static_cast<long>(std::nearbyint(value)); }
+// Kotlin Double.roundToInt(): ties go toward positive infinity.
+long roundHalfUp(double value) {
+    double whole = std::floor(value);
+    return static_cast<long>(value - whole >= 0.5 ? whole + 1.0 : whole);
+}
 
 void appendLe(Bytes& out, std::uint64_t value, int bytes) {
     for (int i = 0; i < bytes; ++i) out.push_back(static_cast<std::uint8_t>(value >> (8 * i)));
+}
+
+static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559,
+              "chassis speed payloads are IEEE-754 binary32");
+
+void appendFloatLe(Bytes& out, double value) {
+    float narrowed = static_cast<float>(value);
+    std::uint32_t bits;
+    std::memcpy(&bits, &narrowed, sizeof(bits));
+    appendLe(out, bits, 4);
 }
 
 float readFloatLe(const Bytes& data, std::size_t offset) {
@@ -125,6 +139,8 @@ Bytes gimbalSubscriptionAdd() {
 // Protocol facts recovered from Windows RoboMaster App traffic. These entries
 // continue after APP_CONNECTION_SETUP and deliberately regenerate the active
 // session, tick, DUSS sequence and CRC rather than replaying captured packets.
+// The three tables below equal robot-core remote/RemoteCommands.kt (remoteSetup,
+// remoteEffects, remoteExit) row for row, including each row's transport flags.
 std::vector<SetupEntry> buildDirectModeSetup() {
     std::vector<SetupEntry> s;
     const Bytes noFlags = fromHex("0000");
@@ -173,52 +189,66 @@ std::vector<SetupEntry> buildDirectModeSetup() {
 std::vector<SetupEntry> buildDirectModeEffect() {
     std::vector<SetupEntry> s;
     const Bytes irGun = fromHex(IR_GUN_CONFIG);
+    const Bytes noFlags = fromHex("0000");
     s.push_back(control());
-    s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SAVE_PREF, fromHex("010301")));
-    s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SAVE_PREF, fromHex("010401")));
-    s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SAVE_PREF, fromHex("010201")));
+    s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SAVE_PREF, fromHex("010301"),
+                       noFlags));
+    s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SAVE_PREF, fromHex("010401"),
+                       noFlags));
+    s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SAVE_PREF, fromHex("010201"),
+                       noFlags));
     s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_PLAY_SOUND_TASK,
-                       fromHex("05049012516a00000000")));
-    s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SAVE_PREF, fromHex("010401")));
-    s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SAVE_PREF, fromHex("010201")));
+                       fromHex("05049012516a00000000"), noFlags));
+    s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SAVE_PREF, fromHex("010401"),
+                       noFlags));
+    s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SAVE_PREF, fromHex("010201"),
+                       noFlags));
     s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SYSTEM_STATUS_CONFIG,
-                       fromHex("01")));
-    s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_GAME_STATE_SYNC, irGun));
+                       fromHex("01"), noFlags));
+    s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_GAME_STATE_SYNC, irGun,
+                       noFlags));
     s.push_back(direct(HOST_HDVT_UAV, ATTR_NO_ACK, CMDSET_RM, CMD_RM_SPECIAL_CONTROL,
-                       fromHex("010301")));
-    s.push_back(direct(HOST_WIFI, ATTR_NEED_ACK, CMDSET_WIFI, CMD_WIFI_AP_KEEPALIVE, Bytes()));
+                       fromHex("010301"), noFlags));
+    s.push_back(direct(HOST_WIFI, ATTR_NEED_ACK, CMDSET_WIFI, CMD_WIFI_AP_KEEPALIVE, Bytes(),
+                       noFlags));
     s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SYSTEM_FUNCTION_CONFIG,
-                       fromHex("02")));
-    s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_GAME_STATE_SYNC, irGun));
+                       fromHex("02"), noFlags));
+    s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_GAME_STATE_SYNC, irGun,
+                       noFlags));
     s.push_back(direct(HOST_HDVT_UAV, ATTR_NO_ACK, CMDSET_RM, CMD_RM_SPECIAL_CONTROL,
-                       fromHex("010301")));
+                       fromHex("010301"), noFlags));
     s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_GAMECTRL_CMD,
-                       fromHex("0100")));
+                       fromHex("0100"), noFlags));
     s.push_back(direct(HOST_CAMERA, ATTR_NEED_ACK, CMDSET_CAMERA, CMD_SET_ZOOM_PARAM,
-                       fromHex("0900006400")));
+                       fromHex("0900006400"), noFlags));
     s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SYSTEM_FUNCTION_CONFIG,
-                       fromHex("02")));
-    s.push_back(direct(HOST_VISION, ATTR_NEED_ACK, CMDSET_VISION, CMD_VISION_CUSTOM, fromHex("0000")));
-    s.push_back(direct(HOST_VISION, ATTR_NEED_ACK, CMDSET_VISION, CMD_VISION_CUSTOM, fromHex("0000")));
+                       fromHex("02"), noFlags));
+    s.push_back(direct(HOST_VISION, ATTR_NEED_ACK, CMDSET_VISION, CMD_VISION_CUSTOM, fromHex("0000"),
+                       noFlags));
+    s.push_back(direct(HOST_VISION, ATTR_NEED_ACK, CMDSET_VISION, CMD_VISION_CUSTOM, fromHex("0000"),
+                       noFlags));
     return s;
 }
 
 std::vector<SetupEntry> buildDirectModeExit() {
     std::vector<SetupEntry> s;
+    const Bytes noFlags = fromHex("0000");
     s.push_back(control());
     s.push_back(direct(HOST_CAMERA, ATTR_NEED_ACK, CMDSET_CAMERA, CMD_SET_ZOOM_PARAM,
-                       fromHex("0900006400")));
+                       fromHex("0900006400"), noFlags));
     s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SYSTEM_FUNCTION_CONFIG,
-                       fromHex("00")));
-    s.push_back(direct(HOST_VISION, ATTR_NEED_ACK, CMDSET_VISION, CMD_VISION_CUSTOM, fromHex("0000")));
+                       fromHex("00"), noFlags));
+    s.push_back(direct(HOST_VISION, ATTR_NEED_ACK, CMDSET_VISION, CMD_VISION_CUSTOM, fromHex("0000"),
+                       noFlags));
     s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_PLAY_SOUND_TASK,
-                       fromHex("06040000000000000000")));
+                       fromHex("06040000000000000000"), noFlags));
     s.push_back(control());
     s.push_back(direct(HOST_HDVT_UAV, ATTR_NO_ACK, CMDSET_RM, CMD_RM_SPECIAL_CONTROL,
-                       fromHex(MODE_NORMAL)));
+                       fromHex(MODE_NORMAL), noFlags));
     s.push_back(direct(HOST_HDVT_UAV, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_SAVE_PREF,
-                       fromHex(MODE_EXIT_PREF)));
-    s.push_back(direct(HOST_VISION, ATTR_NEED_ACK, CMDSET_VISION, CMD_VISION_CUSTOM, fromHex("0000")));
+                       fromHex(MODE_EXIT_PREF), noFlags));
+    s.push_back(direct(HOST_VISION, ATTR_NEED_ACK, CMDSET_VISION, CMD_VISION_CUSTOM, fromHex("0000"),
+                       noFlags));
     return s;
 }
 
@@ -259,6 +289,57 @@ const std::vector<SetupEntry>& directModeEffect() {
 const std::vector<SetupEntry>& directModeExit() {
     static const std::vector<SetupEntry> value = buildDirectModeExit();
     return value;
+}
+
+// Limits of the App's remote commands; robot-core remote/RemoteControl.kt.
+const double CHASSIS_SPEED_LIMIT = 1.0;     // m/s, x and y
+const double CHASSIS_ROTATE_LIMIT = 150.0;  // degrees/s, z
+const double GIMBAL_SPEED_LIMIT = 120.0;    // degrees/s, pitch and yaw
+// Firmware Gimbal.accel_contral_flag default (rm_module.py), sent as the last byte.
+const std::uint8_t GIMBAL_ACCEL_CTRL_FLAG = 0xDC;
+
+// Periodic slots of the connection that carry the chassis and gimbal commands.
+const char* const CHASSIS_SLOT = "chassis";
+const char* const GIMBAL_SLOT = "gimbal";
+
+double limited(double value, double limit, const char* name) {
+    if (!std::isfinite(value)) throw std::invalid_argument(std::string(name) + " must be finite");
+    return clamp(value, -limit, limit);
+}
+
+PeriodicDuss motionCommand(std::uint8_t receiver, std::uint8_t attr, std::uint8_t cmdset,
+                           std::uint8_t cmdid, const Bytes& payload) {
+    PeriodicDuss command;
+    command.sender = HOST_MOBILE;
+    command.receiver = receiver;
+    command.attr = attr;
+    command.cmdset = cmdset;
+    command.cmdid = cmdid;
+    command.payload = payload;
+    return command;
+}
+
+// The S1 chassis stops by commanding zero wheel RPM (firmware ChassisCtrl.stop),
+// which is what the App holds while idle; zero body velocity would not do.
+PeriodicDuss chassisStopCommand() {
+    return motionCommand(HOST_CHASSIS, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_WHEEL_SPEED_SET, Bytes(8, 0));
+}
+
+PeriodicDuss chassisSpeedCommand(const Bytes& payload) {
+    return motionCommand(HOST_CHASSIS, ATTR_NO_ACK, CMDSET_RM, CMD_RM_SPEED_SET, payload);
+}
+
+PeriodicDuss gimbalSpeedCommand(const Bytes& payload) {
+    return motionCommand(HOST_GIMBAL, ATTR_NO_ACK, CMDSET_GIMBAL, CMD_GIMBAL_EXT_CTRL_ACCEL, payload);
+}
+
+// All three velocities are zero once narrowed to float32; the sign bit of a
+// negative zero does not count, as in AppSession.sendNeutral.
+bool isStopPayload(const Bytes& velocity) {
+    for (std::size_t i = 0; i < velocity.size(); ++i) {
+        if (velocity[i] != 0 && !(i % 4 == 3 && velocity[i] == 0x80)) return false;
+    }
+    return true;
 }
 }  // namespace
 
@@ -331,36 +412,25 @@ Bytes buildDdsSubscriptionPayload(std::uint8_t messageId, std::uint64_t uid, std
     return out;
 }
 
-Bytes buildChassisControlPayload(double x, double y, double z) {
-    x = clamp(x, -1.0, 1.0);
-    y = clamp(y, -1.0, 1.0);
-    z = clamp(z, -150.0, 150.0) / 150.0;
-    long linearX = clamp(roundHalfEven(1024 + 256 * x), 0L, 2047L);
-    long linearY = clamp(roundHalfEven(1024 + 256 * y), 0L, 2047L);
-    long angular = clamp(roundHalfEven(256 * z), -1024L, 1023L) & 0x0FFF;
-    Bytes payload = fromHex("0004200001084000000000000000");
-    payload[0] = static_cast<std::uint8_t>(linearY & 0xFF);
-    payload[1] = static_cast<std::uint8_t>(((linearX << 3) & 0xF8) | ((linearY >> 8) & 0x07));
-    payload[2] = static_cast<std::uint8_t>((payload[2] & 0xC0) | ((linearX >> 5) & 0x3F));
-    payload[5] = static_cast<std::uint8_t>(((angular << 4) & 0xF0) | 0x08);
-    payload[6] = static_cast<std::uint8_t>((angular >> 4) & 0xFF);
-    payload[8] = static_cast<std::uint8_t>(0x02 | ((angular << 2) & 0xFF));
-    payload[9] = static_cast<std::uint8_t>((angular >> 6) & 0xFF);
-    payload[10] = 0x04;
-    payload[11] = 0x0C;
-    payload[12] = 0x00;
-    payload[13] = 0x04;
+Bytes buildChassisSpeedPayload(double x, double y, double z) {
+    double forward = limited(x, CHASSIS_SPEED_LIMIT, "x");
+    double right = limited(y, CHASSIS_SPEED_LIMIT, "y");
+    double clockwise = limited(z, CHASSIS_ROTATE_LIMIT, "z");
+    Bytes payload;
+    appendFloatLe(payload, forward);
+    appendFloatLe(payload, right);
+    appendFloatLe(payload, clockwise);
     return payload;
 }
 
 Bytes buildGimbalSpeedPayload(double pitch, double yaw) {
-    pitch = clamp(pitch, -120.0, 120.0) / 120.0;
-    yaw = clamp(yaw, -120.0, 120.0) / 120.0;
-    long pitchRaw = clamp(roundHalfEven(-1024 * pitch), -1024L, 1023L);
-    long yawRaw = clamp(roundHalfEven(-1024 * yaw), -1024L, 1023L);
-    Bytes payload = fromHex("0805");
-    appendLe(payload, static_cast<std::uint16_t>(static_cast<std::int16_t>(pitchRaw)), 2);
+    long pitchRaw = roundHalfUp(limited(pitch, GIMBAL_SPEED_LIMIT, "pitch") * 10.0);
+    long yawRaw = roundHalfUp(limited(yaw, GIMBAL_SPEED_LIMIT, "yaw") * 10.0);
+    Bytes payload;
     appendLe(payload, static_cast<std::uint16_t>(static_cast<std::int16_t>(yawRaw)), 2);
+    appendLe(payload, 0, 2);  // roll
+    appendLe(payload, static_cast<std::uint16_t>(static_cast<std::int16_t>(pitchRaw)), 2);
+    payload.push_back(GIMBAL_ACCEL_CTRL_FLAG);
     return payload;
 }
 
@@ -386,42 +456,25 @@ Bytes buildLedPayload(std::uint32_t component, int red, int green, int blue,
 
 void Chassis::driveSpeed(double x, double y, double z, double leaseSeconds) {
     robot_.requireArmed();
-    robot_.connection.setControlPayload(buildChassisControlPayload(x, y, z), leaseSeconds);
-}
-
-void Chassis::stop() { robot_.connection.setControlPayload(neutralControl()); }
-
-RobotAck Chassis::driveWheels(int w1, int w2, int w3, int w4, double timeout) {
-    robot_.requireArmed();
-    int wheels[4] = {w1, w2, w3, w4};
-    Bytes payload;
-    for (int i = 0; i < 4; ++i) {
-        appendLe(payload, static_cast<std::uint16_t>(static_cast<std::int16_t>(
-                              clamp(wheels[i], -1000, 1000))),
-                 2);
+    Bytes velocity = buildChassisSpeedPayload(x, y, z);
+    if (isStopPayload(velocity)) {
+        stop();
+        return;
     }
-    return robot_.request(HOST_MOBILE, HOST_CHASSIS_CAN, CMDSET_RM, CMD_RM_WHEEL_SPEED_SET,
-                          payload, timeout);
+    robot_.setMotion(CHASSIS_SLOT, chassisSpeedCommand(velocity), leaseSeconds,
+                     chassisStopCommand());
 }
+
+void Chassis::stop() { robot_.setMotion(CHASSIS_SLOT, chassisStopCommand()); }
 
 void Gimbal::driveSpeed(double pitchSpeed, double yawSpeed, double leaseSeconds) {
     robot_.requireArmed();
-    PeriodicDuss command;
-    command.sender = HOST_MOBILE;
-    command.receiver = HOST_GIMBAL;
-    command.attr = ATTR_NO_ACK;
-    command.cmdset = CMDSET_GIMBAL;
-    command.cmdid = CMD_GIMBAL_ROTATE_SPEED;
-    command.payload = buildGimbalSpeedPayload(pitchSpeed, yawSpeed);
-    robot_.connection.setPeriodicDuss("gimbal-speed", command, leaseSeconds);
+    robot_.setMotion(GIMBAL_SLOT, gimbalSpeedCommand(buildGimbalSpeedPayload(pitchSpeed, yawSpeed)),
+                     leaseSeconds, gimbalSpeedCommand(buildGimbalSpeedPayload(0, 0)));
 }
 
 void Gimbal::stop() {
-    robot_.connection.clearPeriodicDuss("gimbal-speed");
-    if (robot_.connection.connected()) {
-        robot_.connection.sendDuss(HOST_MOBILE, HOST_GIMBAL, ATTR_NO_ACK, CMDSET_GIMBAL,
-                                   CMD_GIMBAL_ROTATE_SPEED, buildGimbalSpeedPayload(0, 0));
-    }
+    robot_.setMotion(GIMBAL_SLOT, gimbalSpeedCommand(buildGimbalSpeedPayload(0, 0)));
 }
 
 bool CameraStatus::cardError() const {
@@ -516,10 +569,22 @@ std::vector<std::uint16_t> Robot::enterControlMode() {
     if (controlMode_) return std::vector<std::uint16_t>();
     connection.setControlPayload(neutralControl());
     connection.configureModeKeepalive(fromHex(MODE_REMOTE), false);
-    std::vector<std::uint16_t> sequences = sendSetup(directModeSetup(), true);
-    std::vector<std::uint16_t> effects = sendSetup(directModeEffect(), false);
+    std::vector<std::uint16_t> sequences = sendSetup(directModeSetup());
+    std::vector<std::uint16_t> effects = sendSetup(directModeEffect());
     sequences.insert(sequences.end(), effects.begin(), effects.end());
-    controlMode_ = true;
+    // The chassis follows RM_SPEED_SET only in its SDK work mode with the stick
+    // overlay disabled. The App sends neither command through the tables above.
+    sequences.push_back(connection.sendDuss(HOST_MOBILE, HOST_CHASSIS, ATTR_NEED_ACK, CMDSET_RM,
+                                            CMD_RM_WORK_MODE_SET, Bytes(1, 1)));
+    sequences.push_back(connection.sendDuss(HOST_MOBILE, HOST_CHASSIS, ATTR_NEED_ACK, CMDSET_RM,
+                                            CMD_RM_SPEED_MODE_SET, Bytes(1, 0)));
+    {
+        // From here the App sends a zero command to each actuator on every tick.
+        std::lock_guard<std::mutex> lock(motionLock_);
+        connection.setPeriodicDuss(CHASSIS_SLOT, chassisStopCommand());
+        connection.setPeriodicDuss(GIMBAL_SLOT, gimbalSpeedCommand(buildGimbalSpeedPayload(0, 0)));
+        controlMode_ = true;
+    }
     armed_ = false;
     return sequences;
 }
@@ -527,10 +592,15 @@ std::vector<std::uint16_t> Robot::enterControlMode() {
 void Robot::exitControlMode() {
     if (!controlMode_) return;
     disarm();
-    sendSetup(directModeExit(), false);
+    sendSetup(directModeExit());
+    connection.sendDuss(HOST_MOBILE, HOST_CHASSIS, ATTR_NEED_ACK, CMDSET_RM, CMD_RM_WORK_MODE_SET,
+                        Bytes(1, 0));
     // The exit sequence disables onboard vision.
     vision.forget();
     connection.configureModeKeepalive(fromHex(MODE_NORMAL), true);
+    std::lock_guard<std::mutex> lock(motionLock_);
+    connection.clearPeriodicDuss(CHASSIS_SLOT);
+    connection.clearPeriodicDuss(GIMBAL_SLOT);
     controlMode_ = false;
 }
 
@@ -548,6 +618,18 @@ void Robot::disarm() {
 void Robot::stop() {
     chassis.stop();
     gimbal.stop();
+    connection.setControlPayload(neutralControl());
+}
+
+void Robot::setMotion(const char* slot, const PeriodicDuss& command) {
+    std::lock_guard<std::mutex> lock(motionLock_);
+    if (controlMode_) connection.setPeriodicDuss(slot, command);
+}
+
+void Robot::setMotion(const char* slot, const PeriodicDuss& command, double leaseSeconds,
+                      const PeriodicDuss& idle) {
+    std::lock_guard<std::mutex> lock(motionLock_);
+    if (controlMode_) connection.setPeriodicDuss(slot, command, leaseSeconds, idle);
 }
 
 void Robot::close() {
@@ -755,8 +837,7 @@ void Robot::requireArmed() const {
     if (!armed_) throw std::runtime_error("direct mechanical control requires arm()");
 }
 
-std::vector<std::uint16_t> Robot::sendSetup(const std::vector<SetupEntry>& entries,
-                                            bool includeFlags) {
+std::vector<std::uint16_t> Robot::sendSetup(const std::vector<SetupEntry>& entries) {
     std::vector<std::uint16_t> sequences;
     for (std::size_t i = 0; i < entries.size(); ++i) {
         const SetupEntry& e = entries[i];
@@ -766,7 +847,7 @@ std::vector<std::uint16_t> Robot::sendSetup(const std::vector<SetupEntry>& entri
             continue;
         }
         sequences.push_back(connection.sendDuss(e.sender, e.receiver, e.attr, e.cmdset, e.cmdid,
-                                                e.payload, includeFlags ? e.flags : Bytes()));
+                                                e.payload, e.flags));
         sleepSeconds(0.006);
     }
     return sequences;

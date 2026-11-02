@@ -108,9 +108,15 @@ bool decodeChassisAttitude(const protocol::DussFrame& frame, ChassisAttitude& ou
 // DDS add-subscription payload: subscriber node 2, one UID, periodic, no timestamp.
 Bytes buildDdsSubscriptionPayload(std::uint8_t messageId, std::uint64_t uid, std::uint16_t hz);
 
-// Encode App control-channel chassis velocity in m/s and degrees/s.
-Bytes buildChassisControlPayload(double x, double y, double z);
-// Encode App direct-channel gimbal velocity in degrees/s.
+// Chassis velocity as the App sends it (RM_SPEED_SET, 3f:21): forward m/s, right
+// m/s and clockwise degrees/s as three little-endian float32, limited to
+// +-1 m/s and +-150 deg/s. Throws std::invalid_argument for non-finite input.
+// Mirrors robot-core RemoteControl.velocity.
+Bytes buildChassisSpeedPayload(double x, double y, double z);
+// Gimbal velocity as the App sends it (GIMBAL_EXT_CTRL_ACCEL, 04:0c): pitch up and
+// yaw right in degrees/s, limited to +-120 deg/s, encoded as int16 yaw, roll 0 and
+// pitch in 0.1 deg/s followed by the firmware accel-control flag 0xDC. Throws
+// std::invalid_argument for non-finite input. Mirrors RemoteControl.gimbalVelocity.
 Bytes buildGimbalSpeedPayload(double pitch, double yaw);
 // effect is off, on, solid, breath, or flash.
 Bytes buildLedPayload(std::uint32_t component, int red, int green, int blue,
@@ -118,13 +124,18 @@ Bytes buildLedPayload(std::uint32_t component, int red, int green, int blue,
 
 class Robot;
 
+// While control mode lasts the chassis and gimbal are driven the way the App does:
+// the receive loop sends one command per 50 Hz tick to each, zero motion when idle
+// and the commanded speed while the lease of the latest drive call is fresh. Both
+// require arm() to move; stop() is always safe and a no-op outside control mode.
 class Chassis {
 public:
     explicit Chassis(Robot& robot) : robot_(robot) {}
 
+    // x forward and y right in m/s, z clockwise in degrees/s; reverts to stopped
+    // after leaseSeconds without a renewal.
     void driveSpeed(double x = 0.0, double y = 0.0, double z = 0.0, double leaseSeconds = 0.25);
     void stop();
-    RobotAck driveWheels(int w1 = 0, int w2 = 0, int w3 = 0, int w4 = 0, double timeout = 1.0);
 
 private:
     Robot& robot_;
@@ -134,6 +145,8 @@ class Gimbal {
 public:
     explicit Gimbal(Robot& robot) : robot_(robot) {}
 
+    // pitchSpeed up and yawSpeed right in degrees/s; reverts to stopped after
+    // leaseSeconds without a renewal.
     void driveSpeed(double pitchSpeed = 0.0, double yawSpeed = 0.0, double leaseSeconds = 0.25);
     void stop();
 
@@ -168,10 +181,17 @@ public:
 
     bool initialize(const std::string& connType = "sta", const std::string& protoType = "udp",
                     double timeoutSeconds = 20.0);
+    // Enter the App's remote mode (robot-core AppSession.enterRemote): replay the
+    // remote setup and effect tables, switch the chassis to its SDK work mode with
+    // the stick overlay off, and start holding chassis and gimbal at zero. Returns
+    // the DUSS sequence of every command sent. Does not arm.
     std::vector<std::uint16_t> enterControlMode();
+    // Disarm, replay the exit table, return the chassis to its normal work mode
+    // and stop holding motion (AppSession.exitRemote).
     void exitControlMode();
     void arm();
     void disarm();
+    // Zero chassis and gimbal and drop a pending infrared trigger (AppSession.halt).
     void stop();
     void close();
 
@@ -209,11 +229,20 @@ public:
     void requireArmed() const;
 
 private:
+    friend class Chassis;
+    friend class Gimbal;
+
     Robot(const Robot&);
     Robot& operator=(const Robot&);
 
-    std::vector<std::uint16_t> sendSetup(const std::vector<protocol::SetupEntry>& entries,
-                                         bool includeFlags);
+    std::vector<std::uint16_t> sendSetup(const std::vector<protocol::SetupEntry>& entries);
+    // Chassis and gimbal each own one periodic slot of the connection for as long
+    // as control mode lasts. setMotion ignores calls outside control mode, so a
+    // late stop() cannot revive a slot that exitControlMode() has cleared; with a
+    // lease the slot returns to idle once the lease lapses.
+    void setMotion(const char* slot, const PeriodicDuss& command);
+    void setMotion(const char* slot, const PeriodicDuss& command, double leaseSeconds,
+                   const PeriodicDuss& idle);
     void handleDuss(const protocol::DussFrame& frame);
     CameraStatus freshCameraStatus() const;
     void setCameraMode(int mode);
@@ -221,6 +250,7 @@ private:
 
     std::atomic<bool> controlMode_;
     std::atomic<bool> armed_;
+    std::mutex motionLock_;  // orders controlMode_ changes against slot updates
     mutable std::mutex telemetryLock_;
     std::condition_variable telemetryCondition_;
     bool hasOdometry_;
