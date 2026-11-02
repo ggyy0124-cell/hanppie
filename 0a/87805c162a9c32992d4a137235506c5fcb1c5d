@@ -1,0 +1,21 @@
+cpp/include/hanppie/hanppie.hpp
+  s_ccc3b4e6fc8869::t_3d716f3cf9956d 15
+cpp/README.md
+  s_ccc3b4e6fc8869::t_ebbd56bf87dcc1 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0a87805c162a9c32992d4a137235506c5fcb1c5d",
+  "prompts": {},
+  "sessions": {
+    "s_ccc3b4e6fc8869": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "adcc65ff-4290-4032-985a-e146bae72db2",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "luonian <nianluo@syncore.space>"
+    }
+  }
+}
