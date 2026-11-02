@@ -2,7 +2,7 @@
 
 `src/hanppie` Python 直控库的 C++11 移植：走 RoboMaster S1 出厂开放的 App 协议端口，提供 AppID 认领、App 会话、50 Hz 控制循环、底盘/云台/灯效/音效控制、遥测、音视频流和 Lab 脚本上传。连接序列、遥控模式进出表和灯效载荷与 Python 版逐字节比对；底盘和云台的运动路径以已在实机验证的 App（`packages/robot-core`）为准，与 Python 版不同，见下文「运动与安全」。两者不互相依赖。
 
-当前版本 **0.0.3**（`HANPPIE_VERSION`，定义在 `include/hanppie/hanppie.hpp`，CMake 项目版本从这里读取）。
+当前版本 **0.0.4**（`HANPPIE_VERSION`，定义在 `include/hanppie/hanppie.hpp`，CMake 项目版本从这里读取）。
 
 > 当前状态：离线单测和本机回环集成测试通过。运动指令载荷与 App 的测试向量逐字节一致，遥控模式进出表与 App 逐行核对一致。App 本身经过实机验证，但这份 C++ 实现的运动路径**尚未连接实机验证**。
 
@@ -78,6 +78,8 @@ robot.close();  // 析构时也会自动 close
 - `chassis.driveSpeed(x, y, z, leaseSeconds)` 和 `gimbal.driveSpeed(pitch, yaw, leaseSeconds)` 在租约期内持续发送该速度，到期回到零速保持，默认租约 250 ms；底盘速度全为零（包括 `-0.0`）时等同 `stop()`。底盘速度单位为 m/s（前、右）和 °/s（顺时针），云台为 °/s。
 - 速度超过 App 的上限（底盘 1 m/s、150°/s，云台 120°/s）时被截断，非有限值抛 `std::invalid_argument`；没有 `arm()` 时抛 `std::runtime_error`。
 - `robot.stop()` 同时停底盘和云台，并取消尚未结束的红外发射；`disarm()` 也会调用它。
+- `disarm()` 和运动指令互斥：`disarm()` 返回后，其他线程不会再让机器人动起来。
+- 与 App 相同，超过 500 ms 没有收到机器人的任何数据时，运动和红外指令会先停下底盘和云台，再抛 `std::runtime_error`；重新收到数据后可以继续下发。`RobotCtrl` 的后台续发线程因此也会在失联 500 ms 内停车。
 
 租约、零速保持和停车都由电脑端的进程执行。进程被强杀、断网或断电时，电脑不再发送任何指令，机器人是否会在运动中自行停下取决于固件，**没有经过实机验证**；实机运行时应留人在旁，随时可以切断电源。
 

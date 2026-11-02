@@ -298,6 +298,9 @@ const double GIMBAL_SPEED_LIMIT = 120.0;    // degrees/s, pitch and yaw
 // Firmware Gimbal.accel_contral_flag default (rm_module.py), sent as the last byte.
 const std::uint8_t GIMBAL_ACCEL_CTRL_FLAG = 0xDC;
 
+// AppSession.drive refuses motion and stops once the robot has been silent this long.
+const double LINK_STALE_SECONDS = 0.5;
+
 // Periodic slots of the connection that carry the chassis and gimbal commands.
 const char* const CHASSIS_SLOT = "chassis";
 const char* const GIMBAL_SLOT = "gimbal";
@@ -611,7 +614,12 @@ void Robot::arm() {
 }
 
 void Robot::disarm() {
-    armed_ = false;
+    {
+        // A moving command already past its arm check lands before this point
+        // and is then replaced by stop(); a later one sees the robot disarmed.
+        std::lock_guard<std::mutex> lock(motionLock_);
+        armed_ = false;
+    }
     stop();
 }
 
@@ -628,8 +636,16 @@ void Robot::setMotion(const char* slot, const PeriodicDuss& command) {
 
 void Robot::setMotion(const char* slot, const PeriodicDuss& command, double leaseSeconds,
                       const PeriodicDuss& idle) {
+    requireFreshLink();
     std::lock_guard<std::mutex> lock(motionLock_);
+    requireArmed();
     if (controlMode_) connection.setPeriodicDuss(slot, command, leaseSeconds, idle);
+}
+
+void Robot::requireFreshLink() {
+    if (connection.secondsSinceReceive() < LINK_STALE_SECONDS) return;
+    stop();
+    throw std::runtime_error("no data from the robot for 500 ms; motion stopped");
 }
 
 void Robot::close() {
@@ -761,6 +777,9 @@ void Robot::setRecording(bool active) {
 }
 
 void Robot::fireInfrared(double leaseSeconds) {
+    requireArmed();
+    requireFreshLink();
+    std::lock_guard<std::mutex> lock(motionLock_);
     requireArmed();
     connection.setControlPayload(fromHex(TRIGGER_CONTROL), leaseSeconds);
 }
