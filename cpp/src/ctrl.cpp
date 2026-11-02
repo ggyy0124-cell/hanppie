@@ -12,7 +12,7 @@ namespace ctrl {
 namespace {
 
 const double PI = 3.14159265358979323846;
-// Speed caps of the App control frames (robot.cpp payload builders).
+// Speed caps of the App's remote commands (buildChassisSpeedPayload, buildGimbalSpeedPayload).
 const double CHASSIS_SPEED_MAX = 1.0;
 const double CHASSIS_ROTATE_MAX = 150.0;
 const double GIMBAL_SPEED_MAX = 120.0;
@@ -138,7 +138,6 @@ RobotCtrl::RobotCtrl(Robot& robot_)
       ir_blaster_ctrl(*this),
       media_ctrl(*this),
       vision_ctrl(*this),
-      chassisHeldUntil_(0.0),
       stopping_(false),
       gimbalMoving_(false) {
     MotionSetpoint zero = {0, 0, 0, 0, 0};
@@ -163,14 +162,12 @@ RobotCtrl::~RobotCtrl() {
             } catch (...) {
                 // Leaving control mode below disables vision as well.
             }
-            robot.chassis.stop();
-            robot.gimbal.stop();
-            robot.exitControlMode();
+            robot.exitControlMode();  // disarms first, which zeroes chassis and gimbal
         } else {
             robot.disarm();
         }
     } catch (...) {
-        // Destructors must not throw; the SDK lease already zeroes motion.
+        // Destructors must not throw; a lost connection cannot be told to stop anyway.
     }
 }
 
@@ -202,19 +199,13 @@ MotionSetpoint RobotCtrl::setpoint() const {
     return setpoint_;
 }
 
-void RobotCtrl::holdChassisFor(double seconds) {
-    std::lock_guard<std::mutex> lock(lock_);
-    chassisHeldUntil_ = monotonicSeconds() + seconds;
-}
-
 void RobotCtrl::run() {
     std::unique_lock<std::mutex> lock(lock_);
     while (!stopping_) {
         MotionSetpoint target = setpoint_;
-        bool held = monotonicSeconds() < chassisHeldUntil_;
         lock.unlock();
         try {
-            apply(target, held);
+            apply(target);
         } catch (...) {
             // Disconnected or disarmed; the lease stops the robot. Keep looping
             // so motion resumes if the caller re-arms.
@@ -224,15 +215,12 @@ void RobotCtrl::run() {
     }
 }
 
-void RobotCtrl::apply(const MotionSetpoint& target, bool chassisHeld) {
+void RobotCtrl::apply(const MotionSetpoint& target) {
     if (!robot.connected() || !robot.armed()) return;
-    // Infrared firing borrows the control frame; leave it alone meanwhile.
-    if (!chassisHeld) {
-        if (target.x != 0 || target.y != 0 || target.z != 0) {
-            robot.chassis.driveSpeed(target.x, target.y, target.z, LEASE_SECONDS);
-        } else {
-            robot.chassis.stop();
-        }
+    if (target.x != 0 || target.y != 0 || target.z != 0) {
+        robot.chassis.driveSpeed(target.x, target.y, target.z, LEASE_SECONDS);
+    } else {
+        robot.chassis.stop();
     }
     if (target.pitch != 0 || target.yaw != 0) {
         robot.gimbal.driveSpeed(target.pitch, target.yaw, LEASE_SECONDS);
@@ -455,11 +443,7 @@ void LedCtrl::gun_led_off() { rm_.robot.setMuzzleLed(false, false); }
 
 void GunCtrl::fire_once() { rm_.robot.fireGel(); }
 
-void IrBlasterCtrl::fire_once() {
-    const double trigger = 0.12;
-    rm_.holdChassisFor(trigger + RENEW_SECONDS);
-    rm_.robot.fireInfrared(trigger);
-}
+void IrBlasterCtrl::fire_once() { rm_.robot.fireInfrared(0.12); }
 
 void MediaCtrl::play_sound(std::uint32_t sound_id) { rm_.robot.playSound(sound_id); }
 

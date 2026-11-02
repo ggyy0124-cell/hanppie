@@ -11,8 +11,8 @@
 //   close the loop on 10 Hz telemetry over Wi-Fi; expect about a degree of error.
 // - move_with_distance has no verified position feedback over the App session
 //   and is open loop (distance / speed). Lab uses an onboard position command.
-// - App control frames cap chassis speed at 1 m/s and 150 deg/s, and gimbal
-//   speed at 120 deg/s; larger Lab values are clamped.
+// - The App's remote commands cap chassis speed at 1 m/s and 150 deg/s, and
+//   gimbal speed at 120 deg/s; larger Lab values are clamped.
 // - Vision runs one detector at a time, as in the App. Detection results are
 //   pushed by the robot; cond_wait and detect_marker_and_aim act on them on the
 //   host, so reactions lag by the Wi-Fi round trip.
@@ -335,18 +335,16 @@ public:
     void setChassis(double x, double y, double z);
     void setGimbal(double pitch, double yaw);
     MotionSetpoint setpoint() const;
-    void holdChassisFor(double seconds);
 
 private:
     RobotCtrl(const RobotCtrl&);
     RobotCtrl& operator=(const RobotCtrl&);
     void run();
-    void apply(const MotionSetpoint& target, bool chassisHeld);
+    void apply(const MotionSetpoint& target);
 
     mutable std::mutex lock_;
     std::condition_variable wake_;
     MotionSetpoint setpoint_;
-    double chassisHeldUntil_;
     bool stopping_;
     bool gimbalMoving_;  // motion thread only
     std::thread thread_;

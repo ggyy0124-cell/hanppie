@@ -228,17 +228,44 @@ private:
 
 void sleepMs(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 
-std::vector<Captured> directOnly(const std::vector<Captured>& items) {
+// While in control mode the SDK sends one command to each actuator on every 50 Hz
+// tick: 3f:20 (wheel speed) or 3f:21 (body velocity) to the chassis, 04:0c to the
+// gimbal. They interleave with every other frame, so sequence checks skip them.
+bool isChassisStop(const DussFrame& f) {
+    return f.receiver == HOST_CHASSIS && f.cmdset == CMDSET_RM && f.cmdid == CMD_RM_WHEEL_SPEED_SET;
+}
+
+bool isChassisSpeed(const DussFrame& f) {
+    return f.receiver == HOST_CHASSIS && f.cmdset == CMDSET_RM && f.cmdid == CMD_RM_SPEED_SET;
+}
+
+bool isGimbalSpeed(const DussFrame& f) {
+    return f.receiver == HOST_GIMBAL && f.cmdset == CMDSET_GIMBAL &&
+           f.cmdid == CMD_GIMBAL_EXT_CTRL_ACCEL;
+}
+
+bool isMotionCommand(const DussFrame& f) {
+    return isChassisStop(f) || isChassisSpeed(f) || isGimbalSpeed(f);
+}
+
+// Direct frames other than the periodic motion commands.
+std::vector<Captured> modeFrames(const std::vector<Captured>& items) {
     std::vector<Captured> out;
     for (std::size_t i = 0; i < items.size(); ++i) {
-        if (items[i].type == 0x05) out.push_back(items[i]);
+        if (items[i].type == 0x05 && !isMotionCommand(items[i].frame)) out.push_back(items[i]);
     }
     return out;
 }
 
-void checkDirectSequence(const std::vector<Captured>& actual, const golden::GoldenEntry* expected,
-                         std::size_t count) {
-    std::vector<Captured> direct = directOnly(actual);
+// Compare the direct frames of `actual` with the direct rows of a golden sequence and
+// return the direct frames that follow it. The Python reference leaves the transport
+// flags of the effect and exit tables at their default {attr, 0}; robot-core sends
+// every such row with 0000, and so does the port: golden rows from `appFlagsFrom` on
+// are expected with 0000 instead.
+std::vector<Captured> checkDirectSequence(const std::vector<Captured>& actual,
+                                          const golden::GoldenEntry* expected, std::size_t count,
+                                          std::size_t appFlagsFrom = static_cast<std::size_t>(-1)) {
+    std::vector<Captured> direct = modeFrames(actual);
     std::size_t expectedDirect = 0;
     for (std::size_t i = 0; i < count; ++i) {
         if (std::string(expected[i].kind) != "direct") continue;
@@ -250,9 +277,23 @@ void checkDirectSequence(const std::vector<Captured>& actual, const golden::Gold
         CHECK_EQ(got.frame.cmdset, expected[i].cmdset);
         CHECK_EQ(got.frame.cmdid, expected[i].cmdid);
         CHECK_EQ(toHex(got.frame.payload), std::string(expected[i].payload));
-        CHECK_EQ(toHex(got.flags), std::string(expected[i].flags));
+        CHECK_EQ(toHex(got.flags), i >= appFlagsFrom ? std::string("0000")
+                                                      : std::string(expected[i].flags));
     }
-    CHECK_EQ(direct.size(), expectedDirect);
+    return std::vector<Captured>(direct.begin() + expectedDirect, direct.end());
+}
+
+// A chassis work-mode command as robot-core AppSession sends it: to the chassis,
+// needing an ACK, with the default flags.
+void checkChassisModeFrame(const Captured& got, std::uint8_t cmdid, std::uint8_t value) {
+    CHECK_EQ(got.type, 0x05);
+    CHECK_EQ(got.frame.sender, HOST_MOBILE);
+    CHECK_EQ(got.frame.receiver, HOST_CHASSIS);
+    CHECK_EQ(got.frame.attr, ATTR_NEED_ACK);
+    CHECK_EQ(got.frame.cmdset, CMDSET_RM);
+    CHECK_EQ(got.frame.cmdid, cmdid);
+    CHECK_EQ(toHex(got.frame.payload), toHex(Bytes(1, value)));
+    CHECK_EQ(toHex(got.flags), std::string("4000"));
 }
 
 bool sawControlPayload(const std::vector<Captured>& items, const Bytes& payload) {
@@ -262,9 +303,97 @@ bool sawControlPayload(const std::vector<Captured>& items, const Bytes& payload)
     return false;
 }
 
+// Whether every control frame in `items` carries `payload`.
+bool onlyControlPayload(const std::vector<Captured>& items, const Bytes& payload) {
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        if (items[i].type == 0x04 && items[i].frame.payload != payload) return false;
+    }
+    return true;
+}
+
+// Number of captured motion frames of one command whose payload equals `payload`.
+int countMotion(const std::vector<Captured>& items, bool (*kind)(const DussFrame&),
+                const Bytes& payload) {
+    int count = 0;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        if (items[i].type == 0x05 && kind(items[i].frame) && items[i].frame.payload == payload) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int countMotion(const std::vector<Captured>& items, bool (*kind)(const DussFrame&)) {
+    int count = 0;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        if (items[i].type == 0x05 && kind(items[i].frame)) ++count;
+    }
+    return count;
+}
+
+int countMotion(const std::vector<Captured>& items) {
+    int count = 0;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        if (items[i].type == 0x05 && isMotionCommand(items[i].frame)) ++count;
+    }
+    return count;
+}
+
+// What the App holds while idle: zero wheel RPM for the chassis (3f:20), zero
+// velocity for the gimbal (04:0c).
+const Bytes& idleChassisPayload() {
+    static const Bytes payload(8, 0);
+    return payload;
+}
+
+const Bytes& idleGimbalPayload() {
+    static const Bytes payload = fromHex("000000000000dc");
+    return payload;
+}
+
+// Every motion command in `items` is the idle hold, in the form the App sends it.
+bool onlyIdleHold(const std::vector<Captured>& items) {
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        const DussFrame& f = items[i].frame;
+        if (items[i].type != 0x05 || !isMotionCommand(f)) continue;
+        if (isChassisStop(f) &&
+            (f.attr != ATTR_NEED_ACK || f.payload != idleChassisPayload() ||
+             items[i].flags != fromHex("4000"))) {
+            return false;
+        }
+        if (isGimbalSpeed(f) &&
+            (f.attr != ATTR_NO_ACK || f.payload != idleGimbalPayload() ||
+             items[i].flags != fromHex("0000"))) {
+            return false;
+        }
+        if (isChassisSpeed(f)) return false;
+    }
+    return true;
+}
+
+// Whether `items` hold only idle motion commands from the first mode frame (a direct
+// frame that is not a motion command) on; the frames before it may still carry the
+// speed that was set before the call under test.
+bool idleFromFirstModeFrame(const std::vector<Captured>& items) {
+    std::size_t start = 0;
+    while (start < items.size() &&
+           !(items[start].type == 0x05 && !isMotionCommand(items[start].frame))) {
+        ++start;
+    }
+    return start < items.size() &&
+           onlyIdleHold(std::vector<Captured>(items.begin() + start, items.end()));
+}
+
 }  // namespace
 
-TEST(loopback_session_matches_python_reference_flow) {
+namespace {
+
+// Rows of the App's remoteSetup table; the rows after it are the remoteEffects table.
+const std::size_t ENTER_SETUP_ROWS = 23;
+
+}  // namespace
+
+TEST(loopback_session_matches_the_app_flow) {
     FakeRobot fake;
     fake.ack(CMDSET_RM, CMD_RM_LED_COLOR_SET, Bytes(1, 0));
     fake.ack(CMDSET_RM, CMD_RM_SET_SPEAKER_VOLUME, Bytes(1, 1));
@@ -281,7 +410,8 @@ TEST(loopback_session_matches_python_reference_flow) {
     std::vector<Captured> setup = fake.since(0);
     CHECK(setup.size() >= GOLDEN_COUNT(golden::CONNECT_SEQUENCE));
     setup.resize(GOLDEN_COUNT(golden::CONNECT_SEQUENCE));
-    checkDirectSequence(setup, golden::CONNECT_SEQUENCE, GOLDEN_COUNT(golden::CONNECT_SEQUENCE));
+    CHECK(checkDirectSequence(setup, golden::CONNECT_SEQUENCE,
+                              GOLDEN_COUNT(golden::CONNECT_SEQUENCE)).empty());
 
     // Product identification and working devices.
     fake.push(ATTR_RESP_NEED_ACK, CMDSET_RM, CMD_RM_PRODUCT_ATTRIBUTE_GET, fromHex("0001"));
@@ -291,15 +421,41 @@ TEST(loopback_session_matches_python_reference_flow) {
     CHECK(product.model == RobotModel::ROBOMASTER_S1);
     CHECK(product.capabilities.components().count(RobotComponent::CHASSIS) == 1);
 
-    // Mechanical commands are refused before arm().
+    // Mechanical commands are refused before arm(), and outside control mode
+    // stopping has nothing to hold.
     CHECK_THROWS(robot.chassis.driveSpeed(0.1), std::runtime_error);
     CHECK_THROWS(robot.arm(), std::runtime_error);
-
-    std::size_t enterMark = fake.mark();
-    robot.enterControlMode();
+    std::size_t outsideMark = fake.mark();
+    robot.stop();
     sleepMs(100);
-    checkDirectSequence(fake.since(enterMark), golden::ENTER_SEQUENCE,
-                        GOLDEN_COUNT(golden::ENTER_SEQUENCE));
+    CHECK_EQ(countMotion(fake.since(outsideMark)), 0);
+
+    // robot-core AppSession.enterRemote: the setup and effect tables, then the
+    // chassis SDK work mode with the stick overlay off.
+    std::size_t enterMark = fake.mark();
+    std::vector<std::uint16_t> enterSequences = robot.enterControlMode();
+    sleepMs(100);
+    std::vector<Captured> entered = fake.since(enterMark);
+    std::vector<Captured> afterTables =
+        checkDirectSequence(entered, golden::ENTER_SEQUENCE, GOLDEN_COUNT(golden::ENTER_SEQUENCE),
+                            ENTER_SETUP_ROWS);
+    CHECK_EQ(afterTables.size(), 2u);
+    checkChassisModeFrame(afterTables[0], CMD_RM_WORK_MODE_SET, 1);
+    checkChassisModeFrame(afterTables[1], CMD_RM_SPEED_MODE_SET, 0);
+    CHECK_EQ(enterSequences.size(), GOLDEN_COUNT(golden::ENTER_SEQUENCE) + 2);
+    // The actuators are held at zero from then on, and not before.
+    bool speedModeSent = false;
+    for (std::size_t i = 0; i < entered.size(); ++i) {
+        const DussFrame& f = entered[i].frame;
+        if (entered[i].type != 0x05) continue;
+        if (f.receiver == HOST_CHASSIS && f.cmdset == CMDSET_RM && f.cmdid == CMD_RM_SPEED_MODE_SET) {
+            speedModeSent = true;
+        }
+        if (isMotionCommand(f)) CHECK(speedModeSent);
+    }
+    CHECK(countMotion(entered, isChassisStop, idleChassisPayload()) >= 2);
+    CHECK(countMotion(entered, isGimbalSpeed, idleGimbalPayload()) >= 2);
+    CHECK(onlyIdleHold(entered));
     CHECK(robot.controlMode());
     CHECK(robot.enterControlMode().empty());
 
@@ -309,33 +465,76 @@ TEST(loopback_session_matches_python_reference_flow) {
     CHECK_THROWS(robot.setSpeakerVolume(50), RequestRejected);
     CHECK_THROWS(robot.capture(0.2), TimeoutError);
 
-    // Chassis velocity is repeated on the control channel until its lease expires.
+    // Chassis velocity is sent as RM_SPEED_SET (no ACK) on every tick until its lease
+    // lapses; the chassis then returns to the zero wheel-speed hold. The control
+    // frames stay neutral throughout.
     robot.arm();
     CHECK(robot.armed());
     std::size_t driveMark = fake.mark();
     robot.chassis.driveSpeed(0.5, -0.5, 30, 0.15);
     sleepMs(100);
-    CHECK(sawControlPayload(fake.since(driveMark), buildChassisControlPayload(0.5, -0.5, 30)));
+    std::vector<Captured> driving = fake.since(driveMark);
+    CHECK(countMotion(driving, isChassisSpeed, buildChassisSpeedPayload(0.5, -0.5, 30)) >= 2);
+    for (std::size_t i = 0; i < driving.size(); ++i) {
+        if (driving[i].type != 0x05 || !isChassisSpeed(driving[i].frame)) continue;
+        CHECK_EQ(driving[i].frame.attr, ATTR_NO_ACK);
+        CHECK_EQ(toHex(driving[i].flags), std::string("0000"));
+    }
+    CHECK(onlyControlPayload(driving, neutralControl()));
     sleepMs(150);
     std::size_t expiredMark = fake.mark();
     sleepMs(100);
     std::vector<Captured> expired = fake.since(expiredMark);
-    CHECK(!sawControlPayload(expired, buildChassisControlPayload(0.5, -0.5, 30)));
+    CHECK_EQ(countMotion(expired, isChassisSpeed), 0);
+    CHECK(countMotion(expired, isChassisStop, idleChassisPayload()) >= 2);
     CHECK(sawControlPayload(expired, neutralControl()));
 
-    // Gimbal speed rides along each tick as a periodic direct command.
+    // A zero velocity, negative zero included, is the stop command, not a speed.
+    std::size_t zeroMark = fake.mark();
+    robot.chassis.driveSpeed(-0.0, 0.0, -0.0, 0.5);
+    sleepMs(80);
+    std::vector<Captured> zeroed = fake.since(zeroMark);
+    CHECK_EQ(countMotion(zeroed, isChassisSpeed), 0);
+    CHECK(countMotion(zeroed, isChassisStop, idleChassisPayload()) >= 2);
+
+    // Gimbal velocity goes out as GIMBAL_EXT_CTRL_ACCEL on every tick until its
+    // lease lapses, then the gimbal returns to the zero hold.
     std::size_t gimbalMark = fake.mark();
     robot.gimbal.driveSpeed(30, -30, 0.1);
     sleepMs(80);
     std::vector<Captured> gimbal = fake.since(gimbalMark);
-    int gimbalFrames = 0;
-    for (std::size_t i = 0; i < gimbal.size(); ++i) {
-        if (gimbal[i].frame.cmdset == CMDSET_GIMBAL &&
-            gimbal[i].frame.payload == buildGimbalSpeedPayload(30, -30)) {
-            ++gimbalFrames;
-        }
-    }
-    CHECK(gimbalFrames >= 2);
+    CHECK(countMotion(gimbal, isGimbalSpeed, buildGimbalSpeedPayload(30, -30)) >= 2);
+    sleepMs(100);
+    std::size_t gimbalIdleMark = fake.mark();
+    sleepMs(80);
+    std::vector<Captured> gimbalIdle = fake.since(gimbalIdleMark);
+    CHECK(countMotion(gimbalIdle, isGimbalSpeed, idleGimbalPayload()) >= 2);
+    CHECK_EQ(countMotion(gimbalIdle, isGimbalSpeed, buildGimbalSpeedPayload(30, -30)), 0);
+
+    // Infrared firing takes over only the control frame, so chassis motion carries
+    // on; halting drops a pending trigger as AppSession.halt does.
+    const Bytes trigger = fromHex("0000042000010840000230");
+    robot.chassis.driveSpeed(0.2, 0, 0, 1.0);
+    std::size_t fireMark = fake.mark();
+    robot.fireInfrared(0.12);
+    sleepMs(80);
+    std::vector<Captured> firing = fake.since(fireMark);
+    CHECK(sawControlPayload(firing, trigger));
+    CHECK(countMotion(firing, isChassisSpeed, buildChassisSpeedPayload(0.2, 0, 0)) >= 2);
+    sleepMs(100);
+    std::size_t firedMark = fake.mark();
+    sleepMs(60);
+    std::vector<Captured> fired = fake.since(firedMark);
+    CHECK(!sawControlPayload(fired, trigger));
+    CHECK(sawControlPayload(fired, neutralControl()));
+    robot.fireInfrared(2.0);
+    robot.stop();
+    std::size_t haltMark = fake.mark();
+    sleepMs(60);
+    std::vector<Captured> halted = fake.since(haltMark);
+    CHECK(!sawControlPayload(halted, trigger));
+    CHECK_EQ(countMotion(halted, isChassisSpeed), 0);
+    CHECK(countMotion(halted, isChassisStop, idleChassisPayload()) >= 2);
 
     // Telemetry and media dispatch.
     double before = monotonicSeconds();
@@ -369,8 +568,53 @@ TEST(loopback_session_matches_python_reference_flow) {
     CHECK(!robot.connected());
     CHECK(!robot.controlMode());
     sleepMs(50);
-    checkDirectSequence(fake.since(exitMark), golden::EXIT_SEQUENCE,
-                        GOLDEN_COUNT(golden::EXIT_SEQUENCE));
+    // robot-core AppSession.exitRemote: the exit table, then the chassis back to its
+    // normal work mode, with the actuators held at zero throughout.
+    std::vector<Captured> exited = fake.since(exitMark);
+    std::vector<Captured> afterExit =
+        checkDirectSequence(exited, golden::EXIT_SEQUENCE, GOLDEN_COUNT(golden::EXIT_SEQUENCE), 0);
+    CHECK_EQ(afterExit.size(), 1u);
+    checkChassisModeFrame(afterExit[0], CMD_RM_WORK_MODE_SET, 0);
+    CHECK(idleFromFirstModeFrame(exited));
+}
+
+TEST(leaving_control_mode_stops_motion_and_releases_the_slots) {
+    FakeRobot fake;
+    Robot robot("127.0.0.1", APPID);
+    robot.connection.suspendIdleKeepalive = true;
+    CHECK(robot.initialize("sta", "udp", 5.0));
+    robot.enterControlMode();
+    robot.arm();
+    robot.chassis.driveSpeed(0.3, 0, 0, 5.0);
+    robot.gimbal.driveSpeed(10, 10, 5.0);
+    sleepMs(100);
+
+    // Disarming zeroes both actuators before the first exit-table frame goes out.
+    std::size_t exitMark = fake.mark();
+    robot.exitControlMode();
+    CHECK(!robot.controlMode());
+    CHECK(!robot.armed());
+    CHECK(idleFromFirstModeFrame(fake.since(exitMark)));
+
+    // Nothing is sent afterwards, and later calls cannot bring a slot back.
+    std::size_t releasedMark = fake.mark();
+    robot.stop();
+    robot.chassis.stop();
+    robot.gimbal.stop();
+    CHECK_THROWS(robot.chassis.driveSpeed(0.1), std::runtime_error);
+    CHECK_THROWS(robot.gimbal.driveSpeed(1, 1), std::runtime_error);
+    sleepMs(100);
+    CHECK_EQ(countMotion(fake.since(releasedMark)), 0);
+
+    // Entering again resumes the zero hold.
+    std::size_t reenterMark = fake.mark();
+    robot.enterControlMode();
+    sleepMs(100);
+    std::vector<Captured> reentered = fake.since(reenterMark);
+    CHECK(countMotion(reentered, isChassisStop, idleChassisPayload()) >= 2);
+    CHECK(countMotion(reentered, isGimbalSpeed, idleGimbalPayload()) >= 2);
+    CHECK(onlyIdleHold(reentered));
+    robot.close();
 }
 
 namespace {
@@ -493,23 +737,30 @@ private:
         return static_cast<std::int16_t>(data[offset] | (data[offset + 1] << 8));
     }
 
+    static double floatAt(const Bytes& data, std::size_t offset) {
+        std::uint32_t bits = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) |
+                             (static_cast<std::uint32_t>(data[offset + 3]) << 24);
+        float value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    }
+
+    // The latest command of each actuator wins; the SDK sends a zero hold once a
+    // lease lapses, so a stopped actuator shows up as an explicit zero.
     void observe(const std::vector<Captured>& items) {
-        bool sawGimbal = false;
         for (std::size_t i = 0; i < items.size(); ++i) {
             const DussFrame& f = items[i].frame;
-            if (f.cmdset == CMDSET_GIMBAL && f.cmdid == CMD_GIMBAL_ROTATE_SPEED &&
-                f.payload.size() == 6) {
-                pitchSpeed_ = -int16At(f.payload, 2) / 1024.0 * 120.0;
-                yawSpeed_ = -int16At(f.payload, 4) / 1024.0 * 120.0;
-                sawGimbal = true;
-            } else if (items[i].type == 0x04 && f.payload.size() == 14) {
-                int angular = (f.payload[5] >> 4) | (f.payload[6] << 4);
-                if (angular & 0x800) angular -= 0x1000;
-                chassisRate_ = angular / 256.0 * 150.0;
+            if (items[i].type != 0x05) continue;
+            if (isGimbalSpeed(f) && f.payload.size() == 7) {
+                // int16 yaw, roll, pitch in 0.1 deg/s, then the accel-control flag.
+                yawSpeed_ = int16At(f.payload, 0) / 10.0;
+                pitchSpeed_ = int16At(f.payload, 4) / 10.0;
+            } else if (isChassisSpeed(f) && f.payload.size() == 12) {
+                chassisRate_ = floatAt(f.payload, 8);  // clockwise deg/s
+            } else if (isChassisStop(f)) {
+                chassisRate_ = 0;
             }
         }
-        // Periodic gimbal commands stop when their lease expires.
-        if (!sawGimbal) yawSpeed_ = pitchSpeed_ = 0;
     }
 
     void run() {

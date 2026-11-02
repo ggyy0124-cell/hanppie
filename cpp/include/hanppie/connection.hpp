@@ -91,12 +91,17 @@ public:
     void setControlPayload(const Bytes& payload);
     void setControlPayload(const Bytes& payload, double leaseSeconds);
 
-    // Add or replace one DUSS command sent with every control tick.
+    // Add or replace one DUSS command sent with every control tick until it is
+    // replaced or cleared.
     void setPeriodicDuss(const std::string& name, const PeriodicDuss& command);
-    void setPeriodicDuss(const std::string& name, const PeriodicDuss& command, double leaseSeconds);
+    // As above, but the slot reverts to fallback, which is then sent until it is
+    // replaced or cleared, once leaseSeconds pass without a renewal. Keeps a
+    // moving command from outliving its caller while the slot stays occupied.
+    void setPeriodicDuss(const std::string& name, const PeriodicDuss& command, double leaseSeconds,
+                         const PeriodicDuss& fallback);
     void clearPeriodicDuss(const std::string& name);
 
-    // Configure the one-second App mode keepalive used by the active backend.
+    // Configure the App mode keepalive (sent every 800 ms) used by the active backend.
     void configureModeKeepalive(const Bytes& payload, bool sendSdkReady);
 
     // Wait for a matching received DUSS frame without losing an early response.
@@ -110,7 +115,7 @@ public:
     AppConnectionInfo info() const;
     RobotProduct product() const;
 
-    // Pause the one-second mode keepalive while another workflow owns it.
+    // Pause the mode keepalive while another workflow owns it.
     std::atomic<bool> suspendIdleKeepalive;
 
     // Outer envelope state; guarded internally, exposed for diagnostics.
@@ -127,8 +132,9 @@ private:
 
     struct PeriodicEntry {
         PeriodicDuss command;
-        bool hasDeadline;
+        bool hasLease;
         double deadline;
+        PeriodicDuss fallback;  // replaces command when the lease lapses
     };
 
     void claimAppid(double timeoutSeconds);
