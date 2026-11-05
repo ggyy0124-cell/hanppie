@@ -12,6 +12,6 @@
 #include "hanppie/vision.hpp"
 
 // SDK version (major.minor.patch); CMakeLists.txt reads the project version from here.
-#define HANPPIE_VERSION "0.0.4"
+#define HANPPIE_VERSION "0.0.5"
 
 #endif  // HANPPIE_HANPPIE_HPP
