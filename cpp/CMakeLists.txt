@@ -19,6 +19,7 @@ find_package(Threads REQUIRED)
 add_library(hanppie
   src/connection.cpp
   src/ctrl.cpp
+  src/edu.cpp
   src/lab.cpp
   src/md5.cpp
   src/media.cpp
@@ -45,6 +46,8 @@ endif()
 if(HANPPIE_BUILD_EXAMPLES)
   add_executable(hanppie_drive examples/drive.cpp)
   target_link_libraries(hanppie_drive PRIVATE hanppie::hanppie)
+  add_executable(hanppie_edu examples/edu.cpp)
+  target_link_libraries(hanppie_edu PRIVATE hanppie::hanppie)
   add_executable(hanppie_lab examples/lab.cpp)
   target_link_libraries(hanppie_lab PRIVATE hanppie::hanppie)
   add_executable(hanppie_challenges examples/challenges.cpp)

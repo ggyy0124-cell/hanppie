@@ -1120,3 +1120,103 @@ TEST(lab_style_vision_and_recording_over_loopback) {
     CHECK(!robot.vision.active());
     CHECK_EQ(sim.mask(), 0);
 }
+
+namespace {
+
+// Robot status broadcast on UDP 45678 carrying the loopback address and APPID,
+// repeated like the S1 does while it is not yet driven by a controller.
+class Broadcaster {
+public:
+    Broadcaster() : done_(false) {
+        Bytes decoded(24, 0);
+        decoded[0] = 0x5A;
+        decoded[1] = 0x5B;
+        decoded[6] = 127;
+        decoded[9] = 1;
+        std::memcpy(&decoded[16], APPID, 8);
+        packet_ = test::encodeBroadcast(decoded);
+        sys::startup();
+        fd_ = sys::openSocket(SOCK_DGRAM);
+        thread_ = std::thread(&Broadcaster::run, this);
+    }
+    ~Broadcaster() {
+        done_ = true;
+        thread_.join();
+        sys::closeHandle(fd_);
+    }
+
+private:
+    void run() {
+        while (!done_) {
+            sendTo(fd_, packet_, loopback(APP_PORT));
+            sleepMs(100);
+        }
+    }
+
+    std::atomic<bool> done_;
+    Bytes packet_;
+    sys::Handle fd_;
+    std::thread thread_;
+};
+
+}  // namespace
+
+TEST(edu_entry_finds_the_robot_and_moves_within_limits) {
+    CHECK(!edu::forward(1));  // not connected yet
+    FakeRobot fake;
+    fake.ack(CMDSET_RM, CMD_RM_PLAY_SOUND, Bytes(1, 0));
+    bool connected;
+    {
+        Broadcaster broadcaster;
+        connected = edu::connect();
+    }
+    CHECK(connected);
+    CHECK(edu::connected());
+    MotionSimulator sim(fake, 0.0);
+
+    std::size_t mark = fake.mark();
+    double start = monotonicSeconds();
+    CHECK(edu::forward(0.3));
+    CHECK(monotonicSeconds() - start >= 0.29);
+    CHECK(countMotion(fake.since(mark), isChassisSpeed,
+                      buildChassisSpeedPayload(edu::MOVE_SPEED, 0, 0)) >= 2);
+
+    mark = fake.mark();
+    CHECK(edu::left(0.2));
+    std::vector<Captured> sliding = fake.since(mark);
+    bool slidLeft = false;
+    for (std::size_t i = 0; i < sliding.size(); ++i) {
+        const DussFrame& f = sliding[i].frame;
+        if (!isChassisSpeed(f) || f.payload.size() < 8) continue;
+        float x, y;
+        std::memcpy(&x, &f.payload[0], 4);
+        std::memcpy(&y, &f.payload[4], 4);
+        slidLeft = slidLeft || (std::fabs(x) < 1e-3 && std::fabs(y + edu::MOVE_SPEED) < 1e-3);
+    }
+    CHECK(slidLeft);
+
+    double yaw, pitch, chassisYaw;
+    CHECK(edu::turnRight(90));
+    sleepMs(200);
+    sim.angles(yaw, pitch, chassisYaw);
+    CHECK(std::fabs(ctrl::angleDifference(chassisYaw, 90)) < 3.0);
+
+    mark = fake.mark();
+    CHECK(edu::beep());
+    bool beeped = false;
+    std::vector<Captured> sounds = fake.since(mark);
+    for (std::size_t i = 0; i < sounds.size(); ++i) {
+        beeped = beeped || (sounds[i].frame.cmdset == CMDSET_RM &&
+                            sounds[i].frame.cmdid == CMD_RM_PLAY_SOUND);
+    }
+    CHECK(beeped);
+
+    CHECK(!edu::forward(-1));
+    CHECK(!edu::forward(edu::MAX_SECONDS + 1));
+    CHECK(!edu::turnLeft(edu::MAX_DEGREES + 1));
+    edu::wait(0);
+
+    edu::disconnect();
+    CHECK(!edu::connected());
+    CHECK(!edu::stop());
+}
