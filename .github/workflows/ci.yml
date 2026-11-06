@@ -25,6 +25,57 @@ jobs:
           cmake --build cpp/build --config Release
           ctest --test-dir cpp/build -C Release --output-on-failure
 
+  single-header:
+    name: C++ single header (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Compile and run the single header with the exam options
+        shell: bash
+        run: |
+          python3 cpp/tools/amalgamate.py cpp/build/single/hanppie.h
+          g++ -O2 -std=c++11 -DONLINE_JUDGE -Wall -Wextra -Icpp/build/single \
+            cpp/tests/single_header.cpp -o cpp/build/single/check
+          cpp/build/single/check
+
+  devcpp:
+    name: C++ Dev-C++ 5.11 (TDM-GCC 4.9.2)
+    runs-on: windows-latest
+    env:
+      DEVCPP_URL: https://sourceforge.net/projects/orwelldevcpp/files/Setup%20Releases/Dev-Cpp%205.11%20TDM-GCC%204.9.2%20Setup.exe/download
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/cache@v4
+        with:
+          path: devcpp
+          key: devcpp-5.11-tdm-gcc-4.9.2
+      - name: Extract the compiler bundled with Dev-C++ 5.11
+        shell: bash
+        run: |
+          if [ ! -x devcpp/MinGW64/bin/g++.exe ]; then
+            curl -sSfL --retry 3 -o devcpp-setup.exe "$DEVCPP_URL"
+            7z x -y -odevcpp devcpp-setup.exe MinGW64 > /dev/null
+          fi
+          devcpp/MinGW64/bin/g++.exe --version
+      - name: Build and run the tests with TDM-GCC 4.9.2 at -O2
+        shell: bash
+        run: |
+          mkdir -p cpp/build
+          devcpp/MinGW64/bin/g++.exe -O2 -std=c++11 -Wall -Wextra -Icpp/include -Icpp/src -Icpp/tests \
+            cpp/src/*.cpp cpp/tests/test_main.cpp cpp/tests/test_loopback.cpp -o cpp/build/tests.exe
+          cpp/build/tests.exe
+      - name: Compile and run the single header with the exam options
+        shell: bash
+        run: |
+          python cpp/tools/amalgamate.py cpp/build/single/hanppie.h
+          devcpp/MinGW64/bin/g++.exe -O2 -std=c++11 -DONLINE_JUDGE -Icpp/build/single \
+            cpp/tests/single_header.cpp -o cpp/build/single/check.exe
+          cpp/build/single/check.exe
+
   golden:
     name: C++ golden vectors
     runs-on: ubuntu-latest

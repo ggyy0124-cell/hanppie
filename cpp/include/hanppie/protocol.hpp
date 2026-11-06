@@ -18,6 +18,9 @@ typedef std::vector<std::uint8_t> Bytes;
 
 Bytes fromHex(const std::string& hex);
 std::string toHex(const Bytes& data);
+std::uint16_t readLe16(const Bytes& data, std::size_t offset);
+// Appends the low 16 bits of value, little-endian.
+void appendLe16(Bytes& out, std::size_t value);
 
 namespace protocol {
 

@@ -16,11 +16,13 @@ const std::size_t RECENT_FRAME_LIMIT = 256;
 const double CONTROL_PERIOD_SECONDS = 0.02;
 const double KEEPALIVE_PERIOD_SECONDS = 0.8;
 
-void sleepSeconds(double seconds) {
-    std::this_thread::sleep_for(std::chrono::microseconds(static_cast<long long>(seconds * 1e6)));
-}
-
 }  // namespace
+
+void sleepSeconds(double seconds) {
+    if (seconds > 0) {
+        std::this_thread::sleep_for(std::chrono::microseconds(static_cast<long long>(seconds * 1e6)));
+    }
+}
 
 double monotonicSeconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())

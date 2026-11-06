@@ -11,17 +11,6 @@ static_assert(sizeof(NativeSocket) == sizeof(sys::Handle), "NativeSocket must ho
 
 namespace {
 
-sockaddr_in makeAddress(const std::string& ip, std::uint16_t port) {
-    sockaddr_in address;
-    std::memset(&address, 0, sizeof(address));
-    address.sin_family = AF_INET;
-    address.sin_port = htons(port);
-    if (inet_pton(AF_INET, ip.c_str(), &address.sin_addr) != 1) {
-        throw std::invalid_argument("invalid IPv4 address: " + ip);
-    }
-    return address;
-}
-
 int pollTimeout(double seconds) {
     if (seconds <= 0) return 0;
     return static_cast<int>(seconds * 1000.0 + 0.5);
@@ -38,6 +27,7 @@ bool waitFor(sys::Handle handle, short events, double timeoutSeconds) {
 
 }  // namespace
 
+using sys::makeAddress;
 using sys::socketError;
 
 UdpSocket::UdpSocket() : fd_(sys::INVALID_HANDLE) {}
@@ -47,14 +37,14 @@ UdpSocket::~UdpSocket() { close(); }
 void UdpSocket::open(const std::string& bindIp, std::uint16_t port, bool broadcast) {
     close();
     sys::startup();
-    fd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
+    fd_ = sys::openSocket(SOCK_DGRAM);
     if (fd_ == sys::INVALID_HANDLE) throw socketError("socket");
     int one = 1;
     sys::setOption(fd_, SOL_SOCKET, SO_REUSEADDR, one);
     if (broadcast) sys::setOption(fd_, SOL_SOCKET, SO_BROADCAST, one);
     sys::ignoreUdpConnectionReset(fd_);
     sockaddr_in address = makeAddress(bindIp, port);
-    if (::bind(fd_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+    if (sys::bindAddress(fd_, address) != 0) {
         std::runtime_error error = socketError("bind");
         close();
         throw error;
@@ -95,9 +85,7 @@ bool UdpSocket::receive(Bytes& data, std::string& fromIp) {
         return false;
     }
     data.resize(static_cast<std::size_t>(received));
-    char ip[INET_ADDRSTRLEN] = {0};
-    ::inet_ntop(AF_INET, &address.sin_addr, ip, sizeof(ip));
-    fromIp = ip;
+    fromIp = sys::formatIpv4(address.sin_addr);
     return true;
 }
 
@@ -110,14 +98,14 @@ void TcpSocket::connect(const std::string& host, std::uint16_t port, double time
     sys::startup();
     timeout_ = timeoutSeconds;
     sockaddr_in address = makeAddress(host, port);
-    fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+    fd_ = sys::openSocket(SOCK_STREAM);
     if (fd_ == sys::INVALID_HANDLE) throw socketError("socket");
 #ifdef SO_NOSIGPIPE
     int one = 1;
     sys::setOption(fd_, SOL_SOCKET, SO_NOSIGPIPE, one);
 #endif
     sys::setNonBlocking(fd_);
-    int result = ::connect(fd_, reinterpret_cast<sockaddr*>(&address), sizeof(address));
+    int result = sys::connectAddress(fd_, address);
     if (result != 0 && !sys::connectPending(sys::lastError())) {
         std::runtime_error error = socketError("connect");
         close();
@@ -128,9 +116,7 @@ void TcpSocket::connect(const std::string& host, std::uint16_t port, double time
             close();
             throw std::runtime_error("connect timed out: " + host);
         }
-        int error = 0;
-        sys::AddressLength length = static_cast<sys::AddressLength>(sizeof(error));
-        ::getsockopt(fd_, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &length);
+        int error = sys::pendingError(fd_);
         if (error != 0) {
             std::runtime_error failure = sys::socketError("connect", error);
             close();

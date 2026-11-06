@@ -2,7 +2,7 @@
 
 `src/hanppie` Python 直控库的 C++11 移植：走 RoboMaster S1 出厂开放的 App 协议端口，提供 AppID 认领、App 会话、50 Hz 控制循环、底盘/云台/灯效/音效控制、遥测、音视频流和 Lab 脚本上传。连接序列、遥控模式进出表和灯效载荷与 Python 版逐字节比对；底盘和云台的运动路径以已在实机验证的 App（`packages/robot-core`）为准，与 Python 版不同，见下文「运动与安全」。两者不互相依赖。
 
-当前版本 **0.0.5**（`HANPPIE_VERSION`，定义在 `include/hanppie/hanppie.hpp`，CMake 项目版本从这里读取）。
+当前版本 **0.0.6**（`HANPPIE_VERSION`，定义在 `include/hanppie/hanppie.hpp`，CMake 项目版本从这里读取）。
 
 > 当前状态：离线单测和本机回环集成测试通过。运动指令载荷与 App 的测试向量逐字节一致，遥控模式进出表与 App 逐行核对一致。App 本身经过实机验证，但这份 C++ 实现的运动路径**尚未连接实机验证**。
 
@@ -15,7 +15,7 @@
 | 视频 | 内置 PyAV 解码为帧 | 输出原始 H.264 分片（`Camera::readVideoChunk`），解码交给调用方 |
 | 机身麦克风 | 解码为 48 kHz PCM | 输出 Opus 包（`Camera::readAudioOpus`） |
 | 扬声器播放 | 输入 12 kHz PCM，内部编码 Opus | 输入已编码的 Opus 包（`media::packOpusPackets` + `Audio::playOpus`） |
-| 平台 | 跨平台 | Linux / macOS（POSIX socket）、Windows（Winsock，Vista 及以上） |
+| 平台 | 跨平台 | Linux / macOS（POSIX socket）、Windows（Winsock，Vista 及以上）；另有单头文件版，支持 Dev-C++ 5.11 |
 | 水弹发射、底盘姿态遥测 | 无 | 有，移植自 App（`robot-core`）中已在 S1 验证的指令与订阅 |
 | 视觉识别、SD 卡录像 | 无 | 有，移植自 App（`robot-core` 的 `vision/`、`media/RobotCameraService.kt`），见下文 |
 | Lab 风格高层接口 | 无 | `hanppie/ctrl.hpp`，见下文 |
@@ -49,6 +49,37 @@ Windows 首次运行回环测试或连接机器人时，防火墙可能弹窗询
 add_subdirectory(path/to/hanppie/cpp)
 target_link_libraries(your_app PRIVATE hanppie::hanppie)
 ```
+
+## 单头文件版（Dev-C++ 与在线评测）
+
+Dev-C++ 和在线评测系统只编译一个源文件，不能加链接选项。为此 SDK 另外提供单头文件 `hanppie.h`，包含全部头文件和实现。每个 Release 都附带这个文件，也可以从源码生成：
+
+```bash
+python3 cpp/tools/amalgamate.py hanppie.h
+```
+
+把 `hanppie.h` 放在源文件旁边，只在**一个** `.cpp` 文件里包含它：
+
+```cpp
+#include "hanppie.h"
+
+int main() {
+    hanppie::Robot robot("192.168.2.1", "0123abcd");
+    robot.initialize();
+    robot.enterControlMode();
+    robot.setLed("all", 0, 255, 0);
+    hanppie::sleepSeconds(1);
+    return 0;
+}
+```
+
+| 环境 | 编译方式 |
+| --- | --- |
+| Windows，Dev-C++ 5.11（TDM-GCC 4.9.2，64 位） | 编译选项 `-O2 -std=c++11`（评测环境另加 `-DONLINE_JUDGE`），不需要其他链接选项 |
+| macOS | `clang++ -O2 -std=c++11 main.cpp -o main` |
+| Linux | `g++ -O2 -std=c++11 main.cpp -o main`，glibc 2.34 以前的系统需要加 `-pthread` |
+
+Windows 上网络库 `ws2_32.dll` 在程序运行时自动加载，所以不需要 `-lws2_32`；CMake 构建也一样。CI 用 Dev-C++ 5.11 安装包里的 TDM-GCC 4.9.2 以 `-O2` 编译并运行全部测试，并在 Windows、macOS、Linux 上按上面的方式编译检查单头文件（`tests/single_header.cpp`）。
 
 ## 用法
 

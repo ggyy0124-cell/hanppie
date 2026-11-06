@@ -15,15 +15,6 @@ int hexValue(char c) {
     return -1;
 }
 
-std::uint16_t readLe16(const Bytes& data, std::size_t offset) {
-    return static_cast<std::uint16_t>(data[offset] | (data[offset + 1] << 8));
-}
-
-void appendLe16(Bytes& out, std::uint16_t value) {
-    out.push_back(static_cast<std::uint8_t>(value & 0xFF));
-    out.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFF));
-}
-
 std::mt19937& randomEngine() {
     static std::mt19937 engine{std::random_device{}()};
     return engine;
@@ -53,6 +44,15 @@ std::string toHex(const Bytes& data) {
         out.push_back(digits[data[i] & 0x0F]);
     }
     return out;
+}
+
+std::uint16_t readLe16(const Bytes& data, std::size_t offset) {
+    return static_cast<std::uint16_t>(data[offset] | (data[offset + 1] << 8));
+}
+
+void appendLe16(Bytes& out, std::size_t value) {
+    out.push_back(static_cast<std::uint8_t>(value & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFF));
 }
 
 namespace protocol {

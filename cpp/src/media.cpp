@@ -14,15 +14,6 @@ namespace {
 const std::size_t VIDEO_CHUNK_LIMIT = 120;
 const std::size_t AUDIO_PACKET_LIMIT = 32;
 
-void sleepSeconds(double seconds) {
-    std::this_thread::sleep_for(std::chrono::microseconds(static_cast<long long>(seconds * 1e6)));
-}
-
-void appendLe16(Bytes& out, std::size_t value) {
-    out.push_back(static_cast<std::uint8_t>(value & 0xFF));
-    out.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFF));
-}
-
 }  // namespace
 
 const Bytes& audioTransferId() {
