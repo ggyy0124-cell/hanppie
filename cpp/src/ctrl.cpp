@@ -3,6 +3,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 
@@ -129,6 +130,67 @@ double angleDifference(double a, double b) {
 
 // ---- RobotCtrl -------------------------------------------------------------
 
+namespace {
+
+std::unique_ptr<Robot> connectedRobot(const std::string& robotIp, const std::string& appid) {
+    std::unique_ptr<Robot> robot(new Robot(robotIp, appid));
+    robot->initialize();
+    return robot;
+}
+
+// An unbound robot accepts any AppID; the official App makes a random one the
+// same way. The clock seeds it because std::random_device is deterministic on
+// TDM-GCC 4.9.
+std::string freshAppid() {
+    unsigned long long seed = static_cast<unsigned long long>(
+        std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    unsigned value = static_cast<unsigned>((seed ^ (seed >> 32)) * 2654435761u);
+    if (value == 0) value = 1;
+    char text[9];
+    std::snprintf(text, sizeof(text), "%08x", value);
+    return text;
+}
+
+}  // namespace
+
+std::unique_ptr<Robot> RobotCtrl::connectDiscovered(double discoverySeconds) {
+    protocol::RobotBroadcast found;
+    if (!discoverRobot(found, discoverySeconds)) {
+        throw TimeoutError("no robot broadcast heard; is another controller connected?");
+    }
+    return connectedRobot(found.robotIp, found.appid == "00000000" ? freshAppid() : found.appid);
+}
+
+RobotCtrl::RobotCtrl()
+    : owned_(connectDiscovered()),
+      robot(*owned_),
+      chassis_ctrl(*this),
+      gimbal_ctrl(*this),
+      led_ctrl(*this),
+      gun_ctrl(*this),
+      ir_blaster_ctrl(*this),
+      media_ctrl(*this),
+      vision_ctrl(*this),
+      stopping_(false),
+      gimbalMoving_(false) {
+    start();
+}
+
+RobotCtrl::RobotCtrl(const std::string& robotIp, const std::string& appid)
+    : owned_(connectedRobot(robotIp, appid)),
+      robot(*owned_),
+      chassis_ctrl(*this),
+      gimbal_ctrl(*this),
+      led_ctrl(*this),
+      gun_ctrl(*this),
+      ir_blaster_ctrl(*this),
+      media_ctrl(*this),
+      vision_ctrl(*this),
+      stopping_(false),
+      gimbalMoving_(false) {
+    start();
+}
+
 RobotCtrl::RobotCtrl(Robot& robot_)
     : robot(robot_),
       chassis_ctrl(*this),
@@ -140,6 +202,10 @@ RobotCtrl::RobotCtrl(Robot& robot_)
       vision_ctrl(*this),
       stopping_(false),
       gimbalMoving_(false) {
+    start();
+}
+
+void RobotCtrl::start() {
     MotionSetpoint zero = {0, 0, 0, 0, 0};
     setpoint_ = zero;
     robot.enterControlMode();
@@ -448,6 +514,8 @@ void IrBlasterCtrl::fire_once() { rm_.robot.fireInfrared(0.12); }
 void MediaCtrl::play_sound(std::uint32_t sound_id) { rm_.robot.playSound(sound_id); }
 
 void MediaCtrl::capture() { rm_.robot.capture(); }
+
+void MediaCtrl::play_opus(const Bytes& encoded) { rm_.robot.audio.playOpus(encoded); }
 
 void MediaCtrl::record(int ctrl) {
     if (ctrl != rm_define::record_on && ctrl != rm_define::record_off) {

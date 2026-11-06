@@ -357,8 +357,8 @@ private:
 // at a time, the next uploaded once the previous has played out.
 class Soundtrack {
 public:
-    Soundtrack(hanppie::Robot& robot, const hanppie::Bytes& encoded)
-        : robot_(robot), segments_(split(encoded)), stopping_(false), thread_(&Soundtrack::run, this) {}
+    Soundtrack(RobotCtrl& rm, const hanppie::Bytes& encoded)
+        : rm_(rm), segments_(split(encoded)), stopping_(false), thread_(&Soundtrack::run, this) {}
     ~Soundtrack() {
         stopping_ = true;
         thread_.join();
@@ -392,7 +392,7 @@ private:
     void run() {
         try {
             for (std::size_t i = 0; i < segments_.size() && !stopping_; ++i) {
-                robot_.audio.playOpus(segments_[i].encoded);
+                rm_.media_ctrl.play_opus(segments_[i].encoded);
                 double until = hanppie::monotonicSeconds() + segments_[i].seconds;
                 while (!stopping_ && hanppie::monotonicSeconds() < until) RobotCtrl::sleep(0.05);
             }
@@ -401,7 +401,7 @@ private:
         }
     }
 
-    hanppie::Robot& robot_;
+    RobotCtrl& rm_;
     std::vector<Segment> segments_;
     std::atomic<bool> stopping_;
     std::thread thread_;
@@ -509,7 +509,7 @@ void fridayDisco(RobotCtrl& rm) {
         std::ifstream file(soundtrack.c_str(), std::ios::binary);
         hanppie::Bytes audio((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
         if (audio.empty()) throw std::runtime_error("cannot read " + soundtrack);
-        music.reset(new Soundtrack(rm.robot, audio));
+        music.reset(new Soundtrack(rm, audio));
     }
 
     // 0.00s - 14.04s: 开场站桩 + 自带干冰喷雾 + 主歌律动
@@ -779,15 +779,10 @@ int main(int argc, char** argv) {
     }
     if (argc == 5) soundtrack = argv[4];
     try {
-        hanppie::Robot robot(argv[1], argv[2]);
-        if (!robot.initialize()) {
-            std::fprintf(stderr, "error: robot did not answer\n");
-            return 1;
-        }
         std::printf("preset %s: %s\n", preset->name, preset->title);
         {
             // Leaving this scope stops all motion and exits control mode.
-            RobotCtrl rm(robot);
+            RobotCtrl rm(argv[1], argv[2]);
             try {
                 preset->run(rm);
             } catch (...) {
@@ -799,7 +794,6 @@ int main(int argc, char** argv) {
             }
             finish(rm, *preset);
         }
-        robot.close();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "error: %s\n", error.what());
         return 1;
