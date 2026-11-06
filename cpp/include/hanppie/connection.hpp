@@ -30,6 +30,11 @@ double monotonicSeconds();
 // Block the calling thread; zero and negative durations return immediately.
 void sleepSeconds(double seconds);
 
+// Listen on UDP 45678 for a robot status broadcast. It carries the robot's
+// address and the AppID it is bound to ("00000000" when unbound); the official
+// App and the 2026-11-06 S1 run both connected with the broadcast AppID.
+bool discoverRobot(protocol::RobotBroadcast& out, double timeoutSeconds = 5.0);
+
 class TimeoutError : public std::runtime_error {
 public:
     explicit TimeoutError(const std::string& what) : std::runtime_error(what) {}

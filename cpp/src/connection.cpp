@@ -29,6 +29,24 @@ double monotonicSeconds() {
         .count();
 }
 
+bool discoverRobot(protocol::RobotBroadcast& out, double timeoutSeconds) {
+    net::UdpSocket listener;
+    listener.open("0.0.0.0", protocol::APP_PORT, true);
+    double deadline = monotonicSeconds() + timeoutSeconds;
+    for (;;) {
+        double remaining = deadline - monotonicSeconds();
+        if (remaining <= 0) return false;
+        if (!listener.waitReadable(remaining < 0.2 ? remaining : 0.2)) continue;
+        Bytes data;
+        std::string address;
+        while (listener.receive(data, address)) {
+            if (!protocol::parseRobotBroadcast(data, out)) continue;
+            if (out.robotIp.empty() || out.robotIp == "0.0.0.0") out.robotIp = address;
+            return true;
+        }
+    }
+}
+
 AppConnection::AppConnection(const std::string& robotIp, const std::string& appid,
                              const std::string& localIp, std::uint16_t localPort, bool debug)
     : suspendIdleKeepalive(false),

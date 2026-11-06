@@ -7,6 +7,32 @@
 
 #include "hanppie.h"
 
+// Typical GESP-style student prologue: both using-directives together must not
+// make the beginner calls ambiguous (std::left/std::right/std::forward, and
+// POSIX connect() / wait(int*) from the system headers).
+using namespace std;
+using namespace hanppie::edu;
+
+// Compiled, never run: proves a student program resolves to hanppie::edu.
+int studentProgram() {
+    if (!connect()) return 1;
+    for (int i = 0; i < 3; i++) {
+        forward(1);
+        left(1);
+        right(0.5);
+        backward(1);
+        turnLeft(90);
+        turnRight(45.5);
+        beep();
+        wait(0);
+        wait(1);
+        wait(0.5);
+    }
+    stop();
+    disconnect();
+    return 0;
+}
+
 namespace {
 
 int failures = 0;
@@ -21,7 +47,14 @@ void expect(bool ok, const char* what) {
 }  // namespace
 
 int main() {
-    using namespace hanppie;
+    using hanppie::Robot;
+    using hanppie::toHex;
+    using hanppie::buildLedPayload;
+    using hanppie::buildChassisSpeedPayload;
+    using hanppie::buildGimbalSpeedPayload;
+    using hanppie::md5Hex;
+    using hanppie::sleepSeconds;
+    namespace ctrl = hanppie::ctrl;
     expect(toHex(buildLedPayload(0x3F, 255, 0, 0, "on")) == "3f000000ff0071ff000000e803e803",
            "LED payload");
     expect(toHex(buildChassisSpeedPayload(0.5, -0.5, 60.0)) == "0000003f000000bf00007042",

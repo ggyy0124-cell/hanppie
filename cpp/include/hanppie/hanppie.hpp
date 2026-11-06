@@ -4,6 +4,7 @@
 
 #include "hanppie/connection.hpp"
 #include "hanppie/ctrl.hpp"
+#include "hanppie/edu.hpp"
 #include "hanppie/lab.hpp"
 #include "hanppie/media.hpp"
 #include "hanppie/product.hpp"
@@ -12,6 +13,6 @@
 #include "hanppie/vision.hpp"
 
 // SDK version (major.minor.patch); CMakeLists.txt reads the project version from here.
-#define HANPPIE_VERSION "0.0.6"
+#define HANPPIE_VERSION "0.0.7"
 
 #endif  // HANPPIE_HANPPIE_HPP

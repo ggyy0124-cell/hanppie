@@ -2,7 +2,7 @@
 
 `src/hanppie` Python 直控库的 C++11 移植：走 RoboMaster S1 出厂开放的 App 协议端口，提供 AppID 认领、App 会话、50 Hz 控制循环、底盘/云台/灯效/音效控制、遥测、音视频流和 Lab 脚本上传。连接序列、遥控模式进出表和灯效载荷与 Python 版逐字节比对；底盘和云台的运动路径以已在实机验证的 App（`packages/robot-core`）为准，与 Python 版不同，见下文「运动与安全」。两者不互相依赖。
 
-当前版本 **0.0.6**（`HANPPIE_VERSION`，定义在 `include/hanppie/hanppie.hpp`，CMake 项目版本从这里读取）。
+当前版本 **0.0.7**（`HANPPIE_VERSION`，定义在 `include/hanppie/hanppie.hpp`，CMake 项目版本从这里读取）。
 
 > 当前状态：离线单测和本机回环集成测试通过。运动指令载荷与 App 的测试向量逐字节一致，遥控模式进出表与 App 逐行核对一致。App 本身经过实机验证，但这份 C++ 实现的运动路径**尚未连接实机验证**。
 
@@ -19,6 +19,7 @@
 | 水弹发射、底盘姿态遥测 | 无 | 有，移植自 App（`robot-core`）中已在 S1 验证的指令与订阅 |
 | 视觉识别、SD 卡录像 | 无 | 有，移植自 App（`robot-core` 的 `vision/`、`media/RobotCameraService.kt`），见下文 |
 | Lab 风格高层接口 | 无 | `hanppie/ctrl.hpp`，见下文 |
+| 入门接口 | 无 | `hanppie/edu.hpp`，见下文 |
 
 编解码不内置是为了保持零第三方依赖；需要时可用 FFmpeg 或 libopus 处理上述原始数据。
 
@@ -80,6 +81,40 @@ int main() {
 | Linux | `g++ -O2 -std=c++11 main.cpp -o main`，glibc 2.34 以前的系统需要加 `-pthread` |
 
 Windows 上网络库 `ws2_32.dll` 在程序运行时自动加载，所以不需要 `-lws2_32`；CMake 构建也一样。CI 用 Dev-C++ 5.11 安装包里的 TDM-GCC 4.9.2 以 `-O2` 编译并运行全部测试，并在 Windows、macOS、Linux 上按上面的方式编译检查单头文件（`tests/single_header.cpp`）。
+
+## 入门接口（`hanppie::edu`）
+
+面向刚学 C++ 的孩子（例如在 Dev-C++ 中准备 GESP），只用函数、变量、条件和循环就能控制机器人，不需要了解网络地址、线程、速度续发和异常：
+
+```cpp
+#include "hanppie.h"
+using namespace hanppie::edu;
+
+int main() {
+    if (!connect()) return 1;
+    for (int i = 0; i < 3; i++) {
+        forward(1);  // 低速前进 1 秒，结束自动停车
+        beep();
+    }
+    disconnect();
+}
+```
+
+| 函数 | 作用 |
+| --- | --- |
+| `connect()` / `disconnect()` / `connected()` | 自动找到机器人并连接 / 停车并断开 / 是否已连接 |
+| `forward(秒)` / `backward(秒)` | 前进 / 后退，0.3 m/s |
+| `left(秒)` / `right(秒)` | 向左 / 向右平移，不转向 |
+| `turnLeft(度)` / `turnRight(度)` | 原地左转 / 右转，60°/s |
+| `stop()` / `beep()` / `wait(秒)` | 停车 / 响一声 / 程序暂停 |
+
+- **零配置连接**：`connect()` 监听机器人在局域网里的状态广播（UDP 45678），用广播中的地址和机器人已绑定的 AppID 连接，程序里不出现 IP 和 AppID，AppID 只留在内存中。机器人未绑定时随机生成一个。官方 App 的自动连接和 2026-11-06 的 S1 实机操作都用的是广播里的 AppID；已被其他程序连接的机器人可能不广播，此时会提示关闭其他控制程序后重试。
+- **安全边界**：速度固定为低速；单次移动和等待不超过 10 秒，单次转向不超过 360°，超出范围的调用不执行；每个动作结束、出错或程序正常结束时都会停车。Windows 上关闭控制台窗口或按 Ctrl+C 时会尽量先停车，但这只是尽力而为：用任务管理器强制结束或断电时无法保证，机器人失去指令后的行为尚未实机验证。
+- **出错不抛异常**：函数返回 `false` 并在窗口打印一行英文提示（Dev-C++ 控制台使用系统代码页，中文提示会乱码）。
+- 距离与角度：移动按时间计算，不承诺精确距离；转向按机器人回传的姿态闭环控制。
+- 样例：[`examples/edu.cpp`](examples/edu.cpp)，构建后运行 `cpp/build/hanppie_edu`，不需要参数。
+
+以上只在模拟机器人上测试过，**尚未连接实机**。
 
 ## 用法
 
@@ -223,6 +258,8 @@ flowchart TD
     L["lab.hpp<br/>DSP 打包、FTP 上传"] --> P
     R --> V["vision.hpp<br/>Vision：识别开关与结果"]
     LC["ctrl.hpp<br/>Lab 风格接口"] --> R
+    E["edu.hpp<br/>入门接口"] --> LC
+    E --> C
 ```
 
 | Python | C++ |
