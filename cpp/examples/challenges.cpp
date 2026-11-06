@@ -316,18 +316,12 @@ int main(int argc, char** argv) {
     }
     std::srand(static_cast<unsigned>(std::time(0)));
     try {
-        hanppie::Robot robot(argv[1], argv[2]);
-        if (!robot.initialize()) {
-            std::fprintf(stderr, "error: robot did not answer\n");
-            return 1;
-        }
         std::printf("card %d: %s\n", card->number, card->title);
         {
             // Leaving this scope stops all motion, disables vision and exits control mode.
-            RobotCtrl rm(robot);
+            RobotCtrl rm(argv[1], argv[2]);
             card->run(rm);
         }
-        robot.close();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "error: %s\n", error.what());
         return 1;

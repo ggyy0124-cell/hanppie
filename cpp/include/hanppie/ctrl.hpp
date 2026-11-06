@@ -21,7 +21,9 @@
 
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -257,6 +259,9 @@ public:
     void capture();
     // SD card video: record_on starts, record_off stops; confirmed by camera status.
     void record(int ctrl);
+    // C++ addition, no Lab counterpart: play Opus audio packed with
+    // media::packOpusPackets through the speaker (at most 64 KB per call).
+    void play_opus(const Bytes& encoded);
 
 private:
     RobotCtrl& rm_;
@@ -305,9 +310,7 @@ private:
 
 // Entry point, the equivalent of a Lab script's global controllers:
 //
-//   hanppie::Robot robot("192.168.2.1", "0123abcd");
-//   robot.initialize();
-//   hanppie::ctrl::RobotCtrl rm(robot);   // enters control mode and arms
+//   hanppie::ctrl::RobotCtrl rm;          // finds the robot, enters control mode and arms
 //   rm.chassis_ctrl.set_trans_speed(0.5);
 //   rm.chassis_ctrl.move_with_time(0, 2);
 //   rm.gimbal_ctrl.angle_ctrl(30, 10);
@@ -315,7 +318,15 @@ private:
 //
 // The destructor stops all motion, disarms and leaves control mode.
 class RobotCtrl {
+private:
+    std::unique_ptr<Robot> owned_;  // declared first: `robot` may refer to it
+
 public:
+    // Find the robot from its network broadcast (address and bound AppID) and connect.
+    RobotCtrl();
+    // Connect to a known robot address and AppID.
+    RobotCtrl(const std::string& robotIp, const std::string& appid);
+    // Drive an already initialized robot owned by the caller.
     explicit RobotCtrl(Robot& robot);
     ~RobotCtrl();
 
@@ -330,6 +341,9 @@ public:
 
     // Lab time.sleep equivalent.
     static void sleep(double seconds);
+    // Robot discovered from the broadcast; an unbound robot ("00000000") gets
+    // a fresh AppID. Throws TimeoutError when no robot is heard. Exposed for edu.
+    static std::unique_ptr<Robot> connectDiscovered(double discoverySeconds = 5.0);
 
     // Internal: shared by the controllers.
     void setChassis(double x, double y, double z);
@@ -339,6 +353,7 @@ public:
 private:
     RobotCtrl(const RobotCtrl&);
     RobotCtrl& operator=(const RobotCtrl&);
+    void start();
     void run();
     void apply(const MotionSetpoint& target);
 

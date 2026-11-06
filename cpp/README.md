@@ -2,7 +2,7 @@
 
 `src/hanppie` Python 直控库的 C++11 移植：走 RoboMaster S1 出厂开放的 App 协议端口，提供 AppID 认领、App 会话、50 Hz 控制循环、底盘/云台/灯效/音效控制、遥测、音视频流和 Lab 脚本上传。连接序列、遥控模式进出表和灯效载荷与 Python 版逐字节比对；底盘和云台的运动路径以已在实机验证的 App（`packages/robot-core`）为准，与 Python 版不同，见下文「运动与安全」。两者不互相依赖。
 
-当前版本 **0.0.7**（`HANPPIE_VERSION`，定义在 `include/hanppie/hanppie.hpp`，CMake 项目版本从这里读取）。
+当前版本 **0.0.8**（`HANPPIE_VERSION`，定义在 `include/hanppie/hanppie.hpp`，CMake 项目版本从这里读取）。
 
 > 当前状态：离线单测和本机回环集成测试通过。运动指令载荷与 App 的测试向量逐字节一致，遥控模式进出表与 App 逐行核对一致。App 本身经过实机验证，但这份 C++ 实现的运动路径**尚未连接实机验证**。
 
@@ -63,13 +63,13 @@ python3 cpp/tools/amalgamate.py hanppie.h
 
 ```cpp
 #include "hanppie.h"
+using namespace hanppie::edu;
 
 int main() {
-    hanppie::Robot robot("192.168.2.1", "0123abcd");
-    robot.initialize();
-    robot.enterControlMode();
-    robot.setLed("all", 0, 255, 0);
-    hanppie::sleepSeconds(1);
+    if (!connect()) return 1;
+    forward(1);
+    beep();
+    disconnect();
     return 0;
 }
 ```
@@ -116,29 +116,20 @@ int main() {
 
 以上只在模拟机器人上测试过，**尚未连接实机**。
 
-## 用法
+## 对外接口
 
-```cpp
-#include "hanppie/hanppie.hpp"
+应用程序和样例只使用两套接口：
 
-hanppie::Robot robot("192.168.1.100", "0123abcd");
-robot.initialize();
-robot.enterControlMode();
-robot.setLed("all", 0, 255, 0);
+| 接口 | 适合 | 入口 |
+| --- | --- | --- |
+| 入门接口 `hanppie::edu` | 刚学 C++ 的孩子 | `connect()` 后调用 `forward(1)`、`turnLeft(90)` 等函数，见上文 |
+| Lab 风格接口 `hanppie::ctrl` | 熟悉 S1 Lab 或需要完整功能 | `RobotCtrl rm;` 后调用 `rm.chassis_ctrl.move_with_time(0, 2)` 等，见下文 |
 
-// 确认地面与射界安全后才允许机械动作。
-robot.arm();
-robot.chassis.driveSpeed(0.1, 0.0, 0.0, 0.25);  // 250 ms 租约，不续发就回到零速保持
-// ...
-robot.disarm();
-robot.close();  // 析构时也会自动 close
-```
-
-完整示例见 [`examples/drive.cpp`](examples/drive.cpp)（驾驶）、[`examples/lab.cpp`](examples/lab.cpp)（打包并上传 Lab 脚本）和下文的编程挑战卡、预置脚本示例。机器人同一时间只接受一个控制端。
+`Robot`、`AppConnection`、`media::Camera` 等底层类是这两套接口的实现，保持公开以便测试和扩展，但样例和接入文档不再直接调用。两套接口都没有覆盖的能力只有视频/音频流（`rm.robot.camera`）和 Lab 脚本上传（`hanppie/lab.hpp`，样例 [`examples/lab.cpp`](examples/lab.cpp)）。机器人同一时间只接受一个控制端。
 
 ## 运动与安全
 
-底盘和云台的运动指令、遥控模式切换和持续发送方式与 App 一致，协议细节见[遥控操纵与安全联动](../docs/architecture/hanppie.md#134-遥控操纵镜头坐标系与安全联动)：
+本节说明两套接口共用的底层机制：入门接口和 Lab 风格接口都在此基础上自动续发、自动停车。底盘和云台的运动指令、遥控模式切换和持续发送方式与 App 一致，协议细节见[遥控操纵与安全联动](../docs/architecture/hanppie.md#134-遥控操纵镜头坐标系与安全联动)：
 
 - `enterControlMode()` 走完 App 的遥控模式进入序列，随后底盘和云台以 50 Hz 持续发送零速保持；`exitControlMode()` 先停车再退出，之后不再发送运动指令。没有进入遥控模式时，运动指令不会下发。
 - `chassis.driveSpeed(x, y, z, leaseSeconds)` 和 `gimbal.driveSpeed(pitch, yaw, leaseSeconds)` 在租约期内持续发送该速度，到期回到零速保持，默认租约 250 ms；底盘速度全为零（包括 `-0.0`）时等同 `stop()`。底盘速度单位为 m/s（前、右）和 °/s（顺时针），云台为 °/s。
@@ -157,10 +148,8 @@ robot.close();  // 析构时也会自动 close
 #include "hanppie/hanppie.hpp"
 using namespace hanppie::ctrl;
 
-hanppie::Robot robot("192.168.2.1", "0123abcd");
-robot.initialize();
 {
-    RobotCtrl rm(robot);  // 进入遥控模式并 arm；析构时停车、disarm、退出遥控模式
+    RobotCtrl rm;  // 自动找到机器人，进入遥控模式并 arm；析构时停车、退出遥控模式并断开
     rm.chassis_ctrl.set_trans_speed(0.5);
     rm.chassis_ctrl.move_with_time(0, 2);                       // 向前 2 秒
     rm.chassis_ctrl.rotate_with_degree(rm_define::clockwise, 90);
@@ -176,13 +165,15 @@ robot.initialize();
 }
 ```
 
+`RobotCtrl rm;` 从机器人的局域网广播里取地址和已绑定的 AppID 自动连接；也可以写 `RobotCtrl rm("192.168.2.1", "0123abcd");` 指定地址和 AppID。离开作用域时停车、退出遥控模式并断开。
+
 | 控制器 | 接口 |
 | --- | --- |
 | `chassis_ctrl` | `set_trans_speed`、`set_rotate_speed`、`move`、`move_with_time`、`move_with_distance`、`move_with_speed`、`rotate`、`rotate_with_speed`、`rotate_with_time`、`rotate_with_degree`、`move_and_rotate`、`stop`、`get_attitude` |
 | `gimbal_ctrl` | `set_rotate_speed`、`rotate`、`rotate_with_speed`、`rotate_with_degree`、`yaw_ctrl`、`pitch_ctrl`、`angle_ctrl`、`recenter`、`stop`、`get_axis_angle` |
 | `led_ctrl` | `set_led`、`set_top_led`、`set_bottom_led`、`turn_off`、`gun_led_on`、`gun_led_off` |
 | `gun_ctrl` / `ir_blaster_ctrl` | `fire_once`（水弹 / 红外） |
-| `media_ctrl` | `play_sound`、`capture`、`record` |
+| `media_ctrl` | `play_sound`、`capture`、`record`；C++ 新增 `play_opus`（通过扬声器播放 Opus 音频，单次不超过 64 KB） |
 | `vision_ctrl` | `enable_detection`、`disable_detection`、`get_marker_detection_info`、`get_pose_detection_info`、`get_people_detection_info`、`get_line_detection_info`、`detect_marker_and_aim`；Lab 的 `cond_wait` / `check_condition` 对应 `cond_wait_marker`、`cond_wait_pose`、`cond_wait_people`、`check_marker`、`check_pose`、`check_people` |
 
 与机内 Lab 的差异（远程运行导致）：

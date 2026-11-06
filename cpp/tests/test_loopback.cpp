@@ -1220,3 +1220,15 @@ TEST(edu_entry_finds_the_robot_and_moves_within_limits) {
     CHECK(!edu::connected());
     CHECK(!edu::stop());
 }
+
+TEST(lab_style_entry_owns_its_robot) {
+    FakeRobot fake;
+    {
+        ctrl::RobotCtrl rm("127.0.0.1", APPID);
+        CHECK(rm.robot.connected());
+        CHECK(rm.robot.controlMode());
+        CHECK(rm.robot.armed());
+    }
+    // No broadcast heard: discovery reports it instead of waiting forever.
+    CHECK_THROWS(ctrl::RobotCtrl::connectDiscovered(0.3), TimeoutError);
+}
