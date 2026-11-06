@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hanppie 课堂演示</title>
+<style>
+  :root { color-scheme: light dark; --accent: #b91c1c; --line: #8884; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; display: flex; flex-direction: column; height: 100vh; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0 auto 0 0; }
+  main { flex: 1; display: grid; grid-template-columns: 3fr 2fr; gap: 12px; padding: 12px 16px; min-height: 0; }
+  section { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+  label { font-weight: 600; font-size: 13px; }
+  textarea, pre { font: 14px/1.45 ui-monospace, Consolas, monospace; border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin: 0; }
+  textarea { resize: none; tab-size: 4; }
+  #code { flex: 1; }
+  #input { height: 5.5em; }
+  #output { flex: 1; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+  #output .note { opacity: .65; }
+  #output .error { color: var(--accent); }
+  select, button { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line); }
+  button { min-width: 72px; cursor: pointer; }
+  button:disabled { cursor: default; opacity: .5; }
+  #run { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #state { min-width: 64px; text-align: right; font-size: 13px; }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; } #code { min-height: 18em; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Hanppie 课堂演示</h1>
+  <select id="sample" aria-label="样例"></select>
+  <span id="state"></span>
+  <button id="run">运行</button>
+  <button id="stop" disabled>停止</button>
+</header>
+<main>
+  <section>
+    <label for="code">程序</label>
+    <textarea id="code" spellcheck="false" wrap="off"></textarea>
+  </section>
+  <section>
+    <label for="input">输入</label>
+    <textarea id="input" spellcheck="false"></textarea>
+    <label for="output">输出</label>
+    <pre id="output"></pre>
+  </section>
+</main>
+<script>
+"use strict";
+
+const SAMPLES = [
+  {
+    name: "求和（读取输入）",
+    input: "3\n10 20 30\n",
+    code: `#include <bits/stdc++.h>
+using namespace std;
+
+int main() {
+    int n;
+    cin >> n;
+    long long sum = 0;
+    for (int i = 0; i < n; i++) {
+        int x;
+        cin >> x;
+        sum += x;
+    }
+    cout << sum << endl;
+    return 0;
+}
+`,
+  },
+  {
+    name: "前进、转弯（入门接口）",
+    input: "",
+    code: `#include "hanppie.h"
+#include <iostream>
+using namespace hanppie::edu;
+
+int main() {
+    if (!connect()) {
+        std::cout << "没有找到机器人" << std::endl;
+        return 1;
+    }
+    std::cout << "前进 1 秒" << std::endl;
+    forward(1);
+    std::cout << "左转 90 度" << std::endl;
+    turnLeft(90);
+    beep();
+    disconnect();
+    return 0;
+}
+`,
+  },
+  {
+    name: "走正方形（入门接口）",
+    input: "",
+    code: `#include "hanppie.h"
+#include <iostream>
+using namespace hanppie::edu;
+
+int main() {
+    if (!connect()) {
+        std::cout << "没有找到机器人" << std::endl;
+        return 1;
+    }
+    for (int i = 1; i <= 4; i++) {
+        std::cout << "第 " << i << " 条边" << std::endl;
+        forward(1);
+        turnRight(90);
+    }
+    disconnect();
+    return 0;
+}
+`,
+  },
+  {
+    name: "底盘和云台（Lab 风格接口）",
+    input: "",
+    code: `#include "hanppie.h"
+#include <iostream>
+using namespace hanppie::ctrl;
+
+int main() {
+    RobotCtrl rm;  // 自动找到机器人
+    rm.chassis_ctrl.set_trans_speed(0.5);
+    std::cout << "向前移动 2 秒" << std::endl;
+    rm.chassis_ctrl.move_with_time(0, 2);
+    std::cout << "云台转到右 30 度" << std::endl;
+    rm.gimbal_ctrl.angle_ctrl(30, 0);
+    rm.gimbal_ctrl.angle_ctrl(0, 0);
+    return 0;
+}
+`,
+  },
+];
+
+// The classroom runner on the computer that opens this page.
+const SERVICE = "http://127.0.0.1:8000";
+
+const $ = (id) => document.getElementById(id);
+const sample = $("sample"), code = $("code"), input = $("input"), output = $("output");
+const runButton = $("run"), stopButton = $("stop"), state = $("state");
+let running = false;
+
+SAMPLES.forEach((item, index) => sample.add(new Option(item.name, index)));
+function loadSample() {
+  const item = SAMPLES[sample.value];
+  code.value = item.code;
+  input.value = item.input;
+}
+sample.addEventListener("change", loadSample);
+loadSample();
+
+code.addEventListener("keydown", (event) => {
+  if (event.key === "Tab") {
+    event.preventDefault();
+    code.setRangeText("    ", code.selectionStart, code.selectionEnd, "end");
+  } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    run();
+  }
+});
+
+function setRunning(value, label) {
+  running = value;
+  runButton.disabled = value;
+  stopButton.disabled = !value;
+  state.textContent = label;
+}
+
+function print(text, kind) {
+  const span = document.createElement("span");
+  if (kind) span.className = kind;
+  span.textContent = text;
+  output.append(span);
+  output.scrollTop = output.scrollHeight;
+}
+
+async function errorText(response) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text).error;
+  } catch {
+    return text;
+  }
+}
+
+const UNREACHABLE = "连不上课堂演示服务，请在运行服务的电脑上打开本页\n";
+const MARKER = "\n[runner] ";
+const RESULT = /\n\[runner\] (.*)\n$/;
+const REASONS = [
+  [/^finished \(exit code 0\)$/, "运行结束"],
+  [/^finished \(exit code (-?\d+)\)$/, "运行结束，返回值 $1"],
+  [/^stopped$/, "已停止"],
+  [/^ended by signal (\w+)$/, "程序异常结束（$1）"],
+  [/^timed out after (.*) s$/, "超过运行时间 $1 秒，已停止"],
+  [/^output over .*$/, "输出太多，已停止"],
+];
+
+function describe(reason) {
+  for (const [pattern, text] of REASONS) {
+    if (pattern.test(reason)) return reason.replace(pattern, text);
+  }
+  return reason;
+}
+
+async function run() {
+  if (running) return;
+  output.textContent = "";
+  setRunning(true, "编译中…");
+  const form = new FormData();
+  form.append("code", new Blob([code.value]), "main.cpp");
+  if (input.value) form.append("input", new Blob([input.value]), "input.txt");
+  let text = "";
+  let response;
+  try {
+    response = await fetch(SERVICE + "/run", { method: "POST", body: form });
+  } catch {
+    print(UNREACHABLE, "error");
+    setRunning(false, "");
+    return;
+  }
+  try {
+    if (response.status === 422) {
+      print("编译失败\n\n", "error");
+      print(await response.text());
+      return;
+    }
+    if (!response.ok) {
+      const message =
+        response.status === 409 ? "已有程序在运行，请先停止" :
+        response.status === 403 ? "服务不允许这个网页调用" :
+        await errorText(response);
+      print(message + "\n", "error");
+      return;
+    }
+    state.textContent = "运行中";
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += value;
+      // Hold back what may start the trailing result line until the stream ends.
+      let ready = text.indexOf(MARKER);
+      if (ready < 0) {
+        ready = text.lastIndexOf("\n");
+        if (ready < 0 || !MARKER.startsWith(text.slice(ready))) ready = text.length;
+      }
+      print(text.slice(0, ready));
+      text = text.slice(ready);
+    }
+    const match = RESULT.exec(text);
+    if (match) {
+      print(text.slice(0, match.index));
+      print("\n" + describe(match[1]) + "\n", "note");
+    } else {
+      print(text);
+    }
+  } catch (error) {
+    print(text);
+    print("\n连接中断：" + error.message + "\n", "error");
+  } finally {
+    setRunning(false, "");
+  }
+}
+
+async function stop() {
+  stopButton.disabled = true;
+  state.textContent = "停止中…";
+  try {
+    await fetch(SERVICE + "/stop", { method: "POST" });
+    if (!running) state.textContent = "";
+  } catch (error) {
+    print("\n停止失败：" + error.message + "\n", "error");
+  }
+}
+
+runButton.addEventListener("click", run);
+stopButton.addEventListener("click", stop);
+
+fetch(SERVICE + "/status").then((response) => response.json()).then((status) => {
+  if (status.state === "running" && !running) {
+    state.textContent = "有程序在运行";
+    stopButton.disabled = false;
+  }
+}).catch(() => {});
+</script>
+</body>
+</html>
