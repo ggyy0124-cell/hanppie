@@ -16,6 +16,11 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <pthread.h>
+#include <signal.h>
+
+#include <thread>
 #endif
 
 namespace hanppie {
@@ -68,10 +73,11 @@ public:
         return ctrl_ && ctrl_->robot.connected();
     }
 
-    // Best effort when the console window closes or Ctrl+C is pressed: zero
-    // the motion and give the 50 Hz loop time to send it before the process
-    // dies. Runs on a system thread while an action may hold lock_, so it only
-    // reads the controller pointer, which stays valid until close().
+    // Best effort when the console window closes, Ctrl+C is pressed or the
+    // process is asked to terminate: zero the motion and give the 50 Hz loop
+    // time to send it before the process dies. Runs on another thread while
+    // an action may hold lock_, so it only reads the controller pointer, which
+    // stays valid until close().
     void emergencyStop() {
         ctrl::RobotCtrl* rm = ctrl_.get();
         if (rm == nullptr) return;
@@ -118,12 +124,39 @@ BOOL WINAPI consoleClosing(DWORD) {
     return FALSE;  // let Windows end the process as usual
 }
 
-void watchConsole() {
+void watchExit() {
     static bool installed = false;
     if (!installed) installed = ::SetConsoleCtrlHandler(consoleClosing, TRUE) != 0;
 }
 #else
-void watchConsole() {}
+bool watching = false;
+
+// Ctrl+C, kill or a runner's stop button: stop the robot outside any signal
+// handler, then end the process with the original signal.
+void stopOnSignal(sigset_t signals) {
+    int number = 0;
+    if (::sigwait(&signals, &number) != 0) return;
+    session().emergencyStop();
+    ::signal(number, SIG_DFL);
+    ::pthread_sigmask(SIG_UNBLOCK, &signals, nullptr);
+    ::raise(number);
+}
+
+// SIGINT and SIGTERM are blocked before the SDK threads start, so they inherit
+// the mask and only the watcher receives them. A forked child keeps the mask
+// but not the thread, so it starts its own on connect().
+void watchExit() {
+    static bool forkHook = ::pthread_atfork(nullptr, nullptr, [] { watching = false; }) == 0;
+    (void)forkHook;
+    if (watching) return;
+    sigset_t signals;
+    sigemptyset(&signals);
+    sigaddset(&signals, SIGINT);
+    sigaddset(&signals, SIGTERM);
+    if (::pthread_sigmask(SIG_BLOCK, &signals, nullptr) != 0) return;
+    std::thread(stopOnSignal, signals).detach();
+    watching = true;
+}
 #endif
 
 bool checkRange(const char* name, double value, double limit) {
@@ -149,7 +182,7 @@ bool turn(const char* name, double degrees, int direction) {
 }  // namespace
 
 bool connect() {
-    watchConsole();
+    watchExit();
     return session().open();
 }
 
