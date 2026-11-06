@@ -76,6 +76,17 @@ jobs:
             cpp/tests/single_header.cpp -o cpp/build/single/check.exe
           cpp/build/single/check.exe
 
+  classroom:
+    name: C++ classroom runner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - name: Test the classroom runner
+        run: python -m unittest discover -s cpp/classroom -v
+
   golden:
     name: C++ golden vectors
     runs-on: ubuntu-latest

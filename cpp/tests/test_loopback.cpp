@@ -18,6 +18,12 @@
 #include "socket_compat.hpp"
 #include "test_support.hpp"
 
+#ifndef _WIN32
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 using namespace hanppie;
 using namespace hanppie::protocol;
 namespace sys = hanppie::net::sys;
@@ -1220,6 +1226,37 @@ TEST(edu_entry_finds_the_robot_and_moves_within_limits) {
     CHECK(!edu::connected());
     CHECK(!edu::stop());
 }
+
+#ifndef _WIN32
+// A runner's stop button sends SIGTERM to the student program, which must zero
+// the chassis before it dies. Forked first so the child is single-threaded.
+TEST(edu_entry_stops_the_robot_on_sigterm) {
+    pid_t child = ::fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        bool ok = edu::connect() && edu::forward(edu::MAX_SECONDS);
+        ::_exit(ok ? 0 : 3);
+    }
+    FakeRobot fake;
+    {
+        Broadcaster broadcaster;
+        double deadline = monotonicSeconds() + 10;
+        while (monotonicSeconds() < deadline &&
+               countMotion(fake.since(0), isChassisSpeed,
+                           buildChassisSpeedPayload(edu::MOVE_SPEED, 0, 0)) == 0) {
+            sleepMs(50);
+        }
+    }
+    std::size_t mark = fake.mark();
+    CHECK(countMotion(fake.since(0), isChassisSpeed,
+                      buildChassisSpeedPayload(edu::MOVE_SPEED, 0, 0)) > 0);
+    ::kill(child, SIGTERM);
+    int status = 0;
+    CHECK_EQ(::waitpid(child, &status, 0), child);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM);
+    CHECK(countMotion(fake.since(mark), isChassisStop, idleChassisPayload()) >= 2);
+}
+#endif
 
 TEST(lab_style_entry_owns_its_robot) {
     FakeRobot fake;
