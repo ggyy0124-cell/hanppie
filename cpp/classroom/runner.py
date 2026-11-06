@@ -35,7 +35,9 @@ from pathlib import Path
 
 __all__ = ["Limits", "Runner", "main", "make_server"]
 
-COMPILE_OPTIONS = ("-O2", "-std=c++11")
+# Dev-C++ options, plus -pthread: glibc before 2.34 (Ubuntu 20.04) keeps
+# pthread_create in a separate library that the SDK threads need.
+COMPILE_OPTIONS = ("-O2", "-std=c++11", "-pthread")
 DISCONNECTED = "client disconnected"
 FORM_HINT = "send a multipart form: code=@main.cpp, optionally input=@input.txt"
 
