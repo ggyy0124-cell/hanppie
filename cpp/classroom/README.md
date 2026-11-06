@@ -1,6 +1,6 @@
 # 课堂演示服务
 
-供老师上课演示：在和机器人同一网络的 Ubuntu 电脑上运行一个小服务，把 C++ 程序发给它，服务用 `hanppie.h` 编译并运行，实时返回程序输出，可以随时停止。编译选项与 Dev-C++ 一致（`-O2 -std=c++11`），同一份代码两边都能用。
+供老师上课演示：在和机器人同一网络的 Ubuntu 电脑上运行一个小服务，把 C++ 程序和输入发给它，服务用 `hanppie.h` 编译并运行，实时返回程序输出，可以随时停止。编译选项与 Dev-C++ 一致（`-O2 -std=c++11`），同一份代码两边都能用。
 
 只服务一台机器人、一次一个程序；有程序在运行时再提交会被拒绝，不排队。只用 Python 标准库。
 
@@ -28,14 +28,16 @@ sudo systemctl enable --now hanppie-classroom
 ## 使用
 
 ```bash
-curl -N --data-binary @demo.cpp http://127.0.0.1:8000/run   # 编译并运行，实时显示输出
-curl -X POST http://127.0.0.1:8000/stop                     # 停止
-curl http://127.0.0.1:8000/status                           # {"state": "idle"} 或 "running"
+curl -N -F code=@demo.cpp http://127.0.0.1:8000/run                     # 编译并运行，实时显示输出
+curl -N -F code=@sum.cpp -F input=@input.txt http://127.0.0.1:8000/run  # 附带输入
+curl -N -F code=@sum.cpp -F 'input=3 10 20 30' http://127.0.0.1:8000/run # 输入直接写在命令里
+curl -X POST http://127.0.0.1:8000/stop                                 # 停止
+curl http://127.0.0.1:8000/status                                       # {"state": "idle"} 或 "running"
 ```
 
 | 接口 | 说明 |
 | --- | --- |
-| `POST /run` | 请求内容是 C++ 源码（不超过 256 KB）。编译失败返回 422 和编译器输出；成功则返回 200，实时输出程序内容，最后一行是 `[runner] ...` 说明结束原因。已有程序在运行时返回 409 |
+| `POST /run` | 表单字段 `code` 是 C++ 源码，可选字段 `input` 是程序读取的输入（`cin`、`scanf`），不填时程序读不到输入；整个请求不超过 256 KB。编译失败返回 422 和编译器输出；成功则返回 200，实时输出程序内容，最后一行是 `[runner] ...` 说明结束原因。已有程序在运行时返回 409 |
 | `POST /stop` | 停止当前程序，返回 `{"stopped": true}`；没有程序在运行时为 `false`。在 `curl` 里按 Ctrl+C 断开 `/run` 也会停止 |
 | `GET /status` | 空闲还是正在运行 |
 

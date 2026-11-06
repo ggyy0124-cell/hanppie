@@ -1,4 +1,4 @@
-"""Runner contract tests: compile errors, live output, stop, timeout, busy and disconnect.
+"""Runner contract tests: form, input, compile errors, live output, stop, timeout and busy.
 
 Programs are compiled against a stub ``hanppie.h``; the SDK's own SIGTERM stop is
 covered by the C++ loopback tests. Run with
@@ -47,6 +47,20 @@ int main() {
 """
 
 
+def form(fields: dict[str, bytes]) -> tuple[bytes, str]:
+    """A multipart/form-data body, as ``curl -F`` sends it, and its content type."""
+    boundary = "hanppie-test-boundary"
+    body = b""
+    for name, value in fields.items():
+        body += (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; '
+            f'filename="{name}"\r\nContent-Type: application/octet-stream\r\n\r\n'
+        ).encode()
+        body += value + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    return body, f"multipart/form-data; boundary={boundary}"
+
+
 class RunnerTest(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
@@ -70,9 +84,13 @@ class RunnerTest(unittest.TestCase):
         self.addCleanup(connection.close)
         return connection
 
-    def run_program(self, source: str) -> http.client.HTTPResponse:
+    def run_program(self, source: str, stdin: bytes | None = None) -> http.client.HTTPResponse:
+        fields = {"code": source.encode()}
+        if stdin is not None:
+            fields["input"] = stdin
+        body, content_type = form(fields)
         connection = self.connect()
-        connection.request("POST", "/run", body=source.encode())
+        connection.request("POST", "/run", body=body, headers={"Content-Type": content_type})
         return connection.getresponse()
 
     def call(self, method: str, path: str) -> tuple[int, dict[str, object]]:
@@ -99,6 +117,17 @@ class RunnerTest(unittest.TestCase):
         )
         self.assertEqual(response.status, 200)
         self.assertEqual(response.read().decode(), "hello\n\n[runner] finished (exit code 3)\n")
+
+    def test_program_reads_the_submitted_input(self) -> None:
+        source = (
+            '#include "hanppie.h"\n#include <iostream>\n'
+            "int main() { int a, b; if (std::cin >> a >> b) std::cout << a + b << std::endl;"
+            ' else std::cout << "no input" << std::endl; }\n'
+        )
+        response = self.run_program(source, b"3 4\n")
+        self.assertEqual(response.read().decode(), "7\n\n[runner] finished (exit code 0)\n")
+        response = self.run_program(source)
+        self.assertEqual(response.read().decode(), "no input\n\n[runner] finished (exit code 0)\n")
 
     def test_stop_sends_sigterm_while_output_streams(self) -> None:
         response = self.run_program(STOPPABLE)
@@ -129,11 +158,10 @@ class RunnerTest(unittest.TestCase):
         )
 
     def test_dropping_the_connection_stops_the_program(self) -> None:
-        body = STOPPABLE.encode()
+        body, content_type = form({"code": STOPPABLE.encode()})
         client = socket.create_connection(("127.0.0.1", self.port), timeout=15)
-        client.sendall(
-            b"POST /run HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % len(body) + body
-        )
+        head = f"POST /run HTTP/1.1\r\nHost: x\r\nContent-Type: {content_type}\r\n"
+        client.sendall(f"{head}Content-Length: {len(body)}\r\n\r\n".encode() + body)
         received = b""
         while b"ready" not in received:
             received += client.recv(4096)
@@ -141,12 +169,19 @@ class RunnerTest(unittest.TestCase):
         client.close()
         self.wait_idle()
 
-    def test_requests_without_or_with_oversized_source_are_rejected(self) -> None:
+    def test_malformed_requests_are_rejected(self) -> None:
         connection = self.connect()
         connection.putrequest("POST", "/run")
         connection.endheaders()
         self.assertEqual(connection.getresponse().status, 411)
-        too_large = "x" * (Limits().source_bytes + 1)
+        raw = self.connect()
+        raw.request("POST", "/run", body=b"int main() {}")
+        self.assertEqual(raw.getresponse().status, 400)
+        body, content_type = form({"input": b"1"})
+        missing = self.connect()
+        missing.request("POST", "/run", body=body, headers={"Content-Type": content_type})
+        self.assertEqual(missing.getresponse().status, 400)
+        too_large = "x" * (Limits().request_bytes + 1)
         self.assertEqual(self.run_program(too_large).status, 413)
 
 

@@ -2,8 +2,9 @@
 
 Serves one robot and one program at a time over HTTP for teacher demos:
 
-- ``POST /run`` takes C++ source as the request body, compiles it with the
-  Dev-C++ options and streams the program output until it ends.
+- ``POST /run`` takes a multipart form with the C++ source in ``code`` and
+  optional standard input in ``input``, compiles the source with the Dev-C++
+  options and streams the program output until it ends.
 - ``POST /stop`` stops the running program; dropping the ``/run`` connection
   does the same.
 - ``GET /status`` reports whether a program is running.
@@ -26,6 +27,8 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from email import policy
+from email.parser import BytesParser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +37,7 @@ __all__ = ["Limits", "Runner", "main", "make_server"]
 
 COMPILE_OPTIONS = ("-O2", "-std=c++11")
 DISCONNECTED = "client disconnected"
+FORM_HINT = "send a multipart form: code=@main.cpp, optionally input=@input.txt"
 
 
 @dataclass(frozen=True)
@@ -42,7 +46,7 @@ class Limits:
     stop_grace_seconds: float = 2.0
     compile_seconds: float = 60.0
     output_bytes: int = 1024 * 1024
-    source_bytes: int = 256 * 1024
+    request_bytes: int = 256 * 1024
 
 
 class Runner:
@@ -101,18 +105,24 @@ class Runner:
         return (result.stdout + result.stderr).decode(errors="replace")
 
     def execute(
-        self, work: Path, emit: Callable[[bytes], None], client: socket.socket | None
+        self,
+        work: Path,
+        stdin: bytes,
+        emit: Callable[[bytes], None],
+        client: socket.socket | None,
     ) -> str:
-        """Run ``work/program``, pass its output to ``emit`` and return how it ended."""
+        """Run ``work/program`` on ``stdin``, pass its output to ``emit`` and return how it ended."""
+        (work / "input.txt").write_bytes(stdin)
         # Line-buffered stdio so output arrives while the program runs, not at exit.
-        process = subprocess.Popen(
-            ["stdbuf", "-oL", "-eL", str(work / "program")],
-            cwd=work,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+        with (work / "input.txt").open("rb") as input_file:
+            process = subprocess.Popen(
+                ["stdbuf", "-oL", "-eL", str(work / "program")],
+                cwd=work,
+                stdin=input_file,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
         assert process.stdout is not None
         with process.stdout:
             output = _Output(process.stdout.fileno(), emit, self.limits.output_bytes)
@@ -195,6 +205,21 @@ class _Output:
             pass
 
 
+def _form_fields(content_type: str, body: bytes) -> dict[str, bytes] | None:
+    """Fields of a multipart/form-data body, or None if it is not one."""
+    head = f"Content-Type: {content_type}\r\n\r\n".encode()
+    message = BytesParser(policy=policy.HTTP).parsebytes(head + body)
+    if message.get_content_type() != "multipart/form-data":
+        return None
+    fields: dict[str, bytes] = {}
+    for part in message.walk():
+        name = part.get_param("name", header="content-disposition")
+        payload = part.get_payload(decode=True)
+        if isinstance(name, str) and isinstance(payload, bytes):
+            fields[name] = payload
+    return fields
+
+
 def _closed(client: socket.socket) -> bool:
     try:
         return client.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
@@ -240,13 +265,17 @@ class _Handler(BaseHTTPRequestHandler):
         runner = self.server.runner
         length = self.headers.get("Content-Length")
         if length is None or not length.isdigit():
-            self._reply(HTTPStatus.LENGTH_REQUIRED, {"error": "send the source as the body"})
+            self._reply(HTTPStatus.LENGTH_REQUIRED, {"error": FORM_HINT})
             return
-        if int(length) > runner.limits.source_bytes:
+        if int(length) > runner.limits.request_bytes:
             self.close_connection = True
-            self._reply(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "source too large"})
+            self._reply(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "request too large"})
             return
-        source = self.rfile.read(int(length))
+        body = self.rfile.read(int(length))
+        fields = _form_fields(self.headers.get("Content-Type", ""), body)
+        if fields is None or "code" not in fields:
+            self._reply(HTTPStatus.BAD_REQUEST, {"error": FORM_HINT})
+            return
         if not runner.acquire():
             self._reply(HTTPStatus.CONFLICT, {"error": "a program is already running"})
             return
@@ -255,14 +284,16 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             with tempfile.TemporaryDirectory(prefix="hanppie-run-") as directory:
                 work = Path(directory)
-                error = runner.compile(source, work)
+                error = runner.compile(fields["code"], work)
                 if error is None:
                     self.close_connection = True
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", "text/plain; charset=utf-8")
                     self.send_header("Transfer-Encoding", "chunked")
                     self.end_headers()
-                    reason = runner.execute(work, self._chunk, self.connection)
+                    reason = runner.execute(
+                        work, fields.get("input", b""), self._chunk, self.connection
+                    )
         finally:
             runner.release()
         if error is not None:
