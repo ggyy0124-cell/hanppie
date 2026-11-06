@@ -14,6 +14,7 @@
 
 #include "hanppie/hanppie.hpp"
 #include "golden.hpp"
+#include "socket_compat.hpp"
 #include "test_support.hpp"
 
 using namespace hanppie;
@@ -574,4 +575,24 @@ TEST(lab_style_vision_helpers) {
     CHECK(std::fabs(offset.second) < 1e-9);
     offset = aimOffset(0.5, 0.33);
     CHECK(std::fabs(offset.second - 10.8) < 1e-9);  // target above the aim point: pitch up
+}
+
+TEST(ipv4_text_and_port_byte_order) {
+    namespace sys = hanppie::net::sys;
+    in_addr address;
+    CHECK(sys::parseIpv4("192.168.2.1", address));
+    const unsigned char* bytes = reinterpret_cast<const unsigned char*>(&address);
+    CHECK(bytes[0] == 192 && bytes[1] == 168 && bytes[2] == 2 && bytes[3] == 1);
+    CHECK(sys::formatIpv4(address) == "192.168.2.1");
+    CHECK(sys::parseIpv4("0.0.0.0", address) && sys::formatIpv4(address) == "0.0.0.0");
+    CHECK(sys::parseIpv4("255.255.255.255", address));
+    const char* invalid[] = {"", "1.2.3", "1.2.3.4.5", "256.1.1.1", "1.2.3.", "01.2.3.4",
+                             "1..2.3", "a.b.c.d", " 1.2.3.4", "1.2.3.4 ", "1234.1.1.1"};
+    for (std::size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        CHECK(!sys::parseIpv4(invalid[i], address));
+    }
+    std::uint16_t port = sys::networkPort(0x2766);
+    const unsigned char* portBytes = reinterpret_cast<const unsigned char*>(&port);
+    CHECK(portBytes[0] == 0x27 && portBytes[1] == 0x66);
+    CHECK(sys::hostPort(port) == 0x2766);
 }

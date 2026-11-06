@@ -36,19 +36,19 @@ sockaddr_in loopback(std::uint16_t port) {
     sockaddr_in address;
     std::memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
-    address.sin_port = htons(port);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = sys::networkPort(port);
+    sys::parseIpv4("127.0.0.1", address.sin_addr);
     return address;
 }
 
 sys::Handle udpSocket(std::uint16_t port) {
     sys::startup();
-    sys::Handle fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    sys::Handle fd = sys::openSocket(SOCK_DGRAM);
     int one = 1;
     sys::setOption(fd, SOL_SOCKET, SO_REUSEADDR, one);
     sys::ignoreUdpConnectionReset(fd);
     sockaddr_in address = loopback(port);
-    if (::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+    if (sys::bindAddress(fd, address) != 0) {
         sys::closeHandle(fd);
         throw std::runtime_error("fake robot could not bind a required port");
     }
@@ -669,13 +669,12 @@ namespace {
 
 sys::Handle listenTcp(std::uint16_t& port) {
     sys::startup();
-    sys::Handle fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    sys::Handle fd = sys::openSocket(SOCK_STREAM);
     sockaddr_in address = loopback(0);
-    ::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address));
-    ::listen(fd, 1);
-    sys::AddressLength length = static_cast<sys::AddressLength>(sizeof(address));
-    ::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &length);
-    port = ntohs(address.sin_port);
+    sys::bindAddress(fd, address);
+    sys::listenOn(fd, 1);
+    sys::localAddress(fd, address);
+    port = sys::hostPort(address.sin_port);
     return fd;
 }
 
@@ -701,7 +700,7 @@ TEST(lab_upload_uses_anonymous_binary_passive_ftp) {
     std::vector<std::string> commands;
     std::string stored;
     std::thread ftp([&] {
-        sys::Handle control = ::accept(server, NULL, NULL);
+        sys::Handle control = sys::acceptConnection(server);
         writeLine(control, "220-Fake S1");
         writeLine(control, "220 ready");
         sys::Handle data = sys::INVALID_HANDLE;
@@ -721,7 +720,7 @@ TEST(lab_upload_uses_anonymous_binary_passive_ftp) {
                               dataPort >> 8, dataPort & 0xFF);
                 writeLine(control, reply);
             } else if (line.compare(0, 4, "STOR") == 0) {
-                sys::Handle stream = ::accept(data, NULL, NULL);
+                sys::Handle stream = sys::acceptConnection(data);
                 writeLine(control, "150 sending");
                 char buffer[4096];
                 sys::IoSize size;

@@ -27,6 +27,8 @@ class UdpSocket;
 
 // Seconds on a monotonic clock; used for telemetry timestamps and leases.
 double monotonicSeconds();
+// Block the calling thread; zero and negative durations return immediately.
+void sleepSeconds(double seconds);
 
 class TimeoutError : public std::runtime_error {
 public:

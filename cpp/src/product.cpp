@@ -10,10 +10,6 @@ const std::uint16_t KNOWN_COMPONENTS[] = {
     0x1604, 0x1605, 0x1606, 0x1700, 0x1701, 0x1801, 0x1802, 0x1803, 0x1804, 0x1805, 0x1806,
 };
 
-std::uint16_t readLe16(const Bytes& data, std::size_t offset) {
-    return static_cast<std::uint16_t>(data[offset] | (data[offset + 1] << 8));
-}
-
 }  // namespace
 
 const char* robotModelName(RobotModel model) {

@@ -51,10 +51,6 @@ const std::uint8_t CMD_CAMERA_SET_MODE = 0x10;
 const std::uint8_t CMD_CAMERA_STATUS_PUSH = 0xE4;
 const double CAMERA_STATUS_STALE_SECONDS = 1.5;
 
-void sleepSeconds(double seconds) {
-    std::this_thread::sleep_for(std::chrono::microseconds(static_cast<long long>(seconds * 1e6)));
-}
-
 template <typename T>
 T clamp(T value, T low, T high) {
     return value < low ? low : (value > high ? high : value);
@@ -66,8 +62,12 @@ long roundHalfUp(double value) {
     return static_cast<long>(value - whole >= 0.5 ? whole + 1.0 : whole);
 }
 
+// Bytes go through a local buffer: TDM-GCC 4.9.2 (Dev-C++ 5.11) at -O2 miscompiles
+// push_back of the shifted value in this loop, repeating the low byte.
 void appendLe(Bytes& out, std::uint64_t value, int bytes) {
-    for (int i = 0; i < bytes; ++i) out.push_back(static_cast<std::uint8_t>(value >> (8 * i)));
+    std::uint8_t buffer[8];
+    for (int i = 0; i < bytes; ++i) buffer[i] = static_cast<std::uint8_t>(value >> (8 * i));
+    out.insert(out.end(), buffer, buffer + bytes);
 }
 
 static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559,
