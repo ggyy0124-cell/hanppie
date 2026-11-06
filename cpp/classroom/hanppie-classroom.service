@@ -5,7 +5,8 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-ExecStart=/usr/bin/python3 /opt/hanppie-classroom/runner.py --header /opt/hanppie-classroom/hanppie.h
+# null admits sandboxed pages, like the sample page on a static site here.
+ExecStart=/usr/bin/python3 /opt/hanppie-classroom/runner.py --header /opt/hanppie-classroom/hanppie.h --allow-origin null
 Restart=on-failure
 # Programs run as an unprivileged throwaway user with a read-only system,
 # no access to home directories and a private /tmp for compiling.

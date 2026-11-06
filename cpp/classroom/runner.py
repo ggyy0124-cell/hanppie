@@ -9,6 +9,13 @@ Serves one robot and one program at a time over HTTP for teacher demos:
   does the same.
 - ``GET /status`` reports whether a program is running.
 
+Browsers may only call it from origins allowed with ``--allow-origin``, which
+then get CORS headers to read the replies: a page from any other site could
+otherwise run programs here. Allowing ``null`` admits sandboxed pages, such
+as those of a static site on this computer, but also sandboxed pages of any
+site opened here. Clients without an ``Origin`` header, like curl, are not
+browsers and are accepted.
+
 A stopped program first gets SIGTERM, which the SDK turns into a robot stop,
 and is killed after a grace period. Only the Python standard library is used.
 """
@@ -39,6 +46,7 @@ __all__ = ["Limits", "Runner", "main", "make_server"]
 # pthread_create in a separate library that the SDK threads need.
 COMPILE_OPTIONS = ("-O2", "-std=c++11", "-pthread")
 DISCONNECTED = "client disconnected"
+REJECTED = "requests from this page are not allowed"
 FORM_HINT = "send a multipart form: code=@main.cpp, optionally input=@input.txt"
 
 
@@ -248,6 +256,26 @@ class _Handler(BaseHTTPRequestHandler):
     server: _Server
     protocol_version = "HTTP/1.1"
 
+    def end_headers(self) -> None:
+        # Errors raised while parsing the request line come before any headers.
+        if getattr(self, "headers", None) is not None and "Origin" in self.headers:
+            if self._allowed():
+                self.send_header("Access-Control-Allow-Origin", self.headers["Origin"])
+            self.send_header("Vary", "Origin")
+        super().end_headers()
+
+    def do_OPTIONS(self) -> None:
+        """CORS and local network preflight for allowed origins."""
+        if not self._allowed():
+            self._reply(HTTPStatus.FORBIDDEN, {"error": REJECTED})
+            return
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self) -> None:
         if self.path != "/status":
             self._reply(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -256,12 +284,19 @@ class _Handler(BaseHTTPRequestHandler):
         self._reply(HTTPStatus.OK, {"state": state})
 
     def do_POST(self) -> None:
-        if self.path == "/run":
+        if not self._allowed():
+            self.close_connection = True
+            self._reply(HTTPStatus.FORBIDDEN, {"error": REJECTED})
+        elif self.path == "/run":
             self._run()
         elif self.path == "/stop":
             self._reply(HTTPStatus.OK, {"stopped": self.server.runner.stop()})
         else:
             self._reply(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+    def _allowed(self) -> bool:
+        origin = self.headers.get("Origin")
+        return origin is None or origin in self.server.origins
 
     def _run(self) -> None:
         runner = self.server.runner
@@ -326,13 +361,17 @@ class _Handler(BaseHTTPRequestHandler):
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], runner: Runner) -> None:
+    def __init__(self, address: tuple[str, int], runner: Runner, origins: frozenset[str]) -> None:
         self.runner = runner
+        self.origins = origins
         super().__init__(address, _Handler)
 
 
-def make_server(host: str, port: int, runner: Runner) -> ThreadingHTTPServer:
-    return _Server((host, port), runner)
+def make_server(
+    host: str, port: int, runner: Runner, origins: frozenset[str] = frozenset()
+) -> ThreadingHTTPServer:
+    """Browsers may call from ``origins``, like ``http://127.0.0.1:8080`` or ``null``."""
+    return _Server((host, port), runner, origins)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -341,12 +380,20 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--host", default="127.0.0.1", help="listen address")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--compiler", default="g++")
+    parser.add_argument(
+        "--allow-origin",
+        action="append",
+        default=[],
+        metavar="ORIGIN",
+        help="let browser pages from this origin call the service, repeatable; "
+        "'null' admits sandboxed pages of any site",
+    )
     parser.add_argument("--run-seconds", type=float, default=Limits.run_seconds)
     args = parser.parse_args(argv)
     if not args.header.is_file():
         parser.error(f"header not found: {args.header}")
     runner = Runner(args.header.resolve(), Limits(run_seconds=args.run_seconds), args.compiler)
-    server = make_server(args.host, args.port, runner)
+    server = make_server(args.host, args.port, runner, frozenset(args.allow_origin))
     print(f"listening on http://{args.host}:{server.server_address[1]}", flush=True)
     try:
         server.serve_forever()

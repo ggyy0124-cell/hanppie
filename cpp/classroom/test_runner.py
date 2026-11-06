@@ -69,9 +69,9 @@ class RunnerTest(unittest.TestCase):
         header.write_text(STUB_HEADER)
         self.start(Runner(header, Limits(run_seconds=10, stop_grace_seconds=0.5)))
 
-    def start(self, runner: Runner) -> None:
+    def start(self, runner: Runner, allowed_origins: frozenset[str] = frozenset()) -> None:
         self.runner = runner
-        self.server = make_server("127.0.0.1", 0, runner)
+        self.server = make_server("127.0.0.1", 0, runner, allowed_origins)
         self.port = self.server.server_address[1]
         thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         thread.start()
@@ -183,6 +183,40 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(missing.getresponse().status, 400)
         too_large = "x" * (Limits().request_bytes + 1)
         self.assertEqual(self.run_program(too_large).status, 413)
+
+    def test_browsers_are_rejected_unless_allowed(self) -> None:
+        for origin in ("http://attacker.example", "null"):
+            with self.subTest(origin=origin):
+                connection = self.connect()
+                connection.request("POST", "/stop", headers={"Origin": origin})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 403)
+                self.assertIsNone(response.getheader("Access-Control-Allow-Origin"))
+        body, content_type = form({"code": STOPPABLE.encode()})
+        connection = self.connect()
+        headers = {"Content-Type": content_type, "Origin": "null"}
+        connection.request("POST", "/run", body=body, headers=headers)
+        self.assertEqual(connection.getresponse().status, 403)
+        self.assertFalse(self.runner.running())
+
+    def test_allowed_origins_get_cors_headers(self) -> None:
+        self.start(self.runner, frozenset({"null"}))
+        body, content_type = form({"code": b'#include <cstdio>\nint main() { std::puts("hi"); }'})
+        connection = self.connect()
+        headers = {"Content-Type": content_type, "Origin": "null"}
+        connection.request("POST", "/run", body=body, headers=headers)
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.getheader("Access-Control-Allow-Origin"), "null")
+        self.assertIn(b"hi", response.read())
+        preflight = self.connect()
+        preflight.request("OPTIONS", "/run", headers={"Origin": "null"})
+        response = preflight.getresponse()
+        self.assertEqual(response.status, 204)
+        self.assertEqual(response.getheader("Access-Control-Allow-Private-Network"), "true")
+        other = self.connect()
+        other.request("POST", "/stop", headers={"Origin": "http://attacker.example"})
+        self.assertEqual(other.getresponse().status, 403)
 
 
 if __name__ == "__main__":
