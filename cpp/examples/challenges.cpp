@@ -59,16 +59,35 @@ void singAndDance(RobotCtrl& rm) {
     rm.gimbal_ctrl.recenter();
 }
 
-// 6. Aim at the red heart marker, then shoot (infrared; use gun_ctrl.fire_once()
-//    for a gel bead).
+// 6. Aim and fire once per presentation of the red heart, for one minute.
 void aimRedHeart(RobotCtrl& rm) {
     rm.vision_ctrl.enable_detection(rm_define::vision_detection_marker);
-    std::printf("show the red heart marker...\n");
-    rm.vision_ctrl.cond_wait_marker(rm_define::marker_trans_red_heart);
-    if (rm.vision_ctrl.detect_marker_and_aim(rm_define::marker_trans_red_heart)) {
-        rm.ir_blaster_ctrl.fire_once();
-        rm.media_ctrl.play_sound(rm_define::media_sound_shoot);
+    const double end = now() + 60;
+    bool ready = true, lightOn = false;
+    double absentSince = 0;
+    std::printf("show the red heart marker; remove it before the next attempt...\n");
+    while (now() < end) {
+        const bool seen = rm.vision_ctrl.check_marker(rm_define::marker_trans_red_heart);
+        if (!seen) {
+            if (absentSince == 0) absentSince = now();
+            if (now() - absentSince >= 1) ready = true;
+            if (lightOn) rm.led_ctrl.turn_off(rm_define::armor_all);
+            lightOn = false;
+        } else {
+            absentSince = 0;
+            if (!lightOn) rm.led_ctrl.set_led(rm_define::armor_all, 255, 0, 0, rm_define::effect_always_on);
+            lightOn = true;
+            if (ready && now() + 5 < end) {
+                ready = false;
+                if (rm.vision_ctrl.detect_marker_and_aim(rm_define::marker_trans_red_heart)) {
+                    rm.ir_blaster_ctrl.fire_once();
+                    rm.media_ctrl.play_sound(rm_define::media_sound_shoot);
+                }
+            }
+        }
+        RobotCtrl::sleep(0.2);
     }
+    rm.led_ctrl.turn_off(rm_define::armor_all);
 }
 
 // 9. Turn the gimbal to the back and strike.
@@ -246,18 +265,24 @@ void rollDice(RobotCtrl& rm) {
     rm.media_ctrl.play_sound(SCALE[face - 1]);
 }
 
-// 28. Marker concert: number 1 plays Do and number 2 plays Re, for 30 s.
+// 28. Number 1 plays Do with red light; number 2 plays Re with blue light.
 void markerConcert(RobotCtrl& rm) {
     rm.vision_ctrl.enable_detection(rm_define::vision_detection_marker);
-    double end = now() + 30;
+    const double end = now() + 60;
+    int previous = -1;
     while (now() < end) {
-        if (rm.vision_ctrl.check_marker(rm_define::marker_number_zero + 1)) {
-            rm.media_ctrl.play_sound(SCALE[0]);
-        } else if (rm.vision_ctrl.check_marker(rm_define::marker_number_zero + 2)) {
-            rm.media_ctrl.play_sound(SCALE[1]);
+        int marker = rm.vision_ctrl.check_marker(rm_define::marker_number_zero + 1) ? 1 :
+                     rm.vision_ctrl.check_marker(rm_define::marker_number_zero + 2) ? 2 : 0;
+        if (marker != previous) {
+            if (marker == 0) rm.led_ctrl.turn_off(rm_define::armor_all);
+            else rm.led_ctrl.set_led(rm_define::armor_all, marker == 1 ? 255 : 0, 0,
+                                     marker == 2 ? 255 : 0, rm_define::effect_always_on);
+            previous = marker;
         }
+        if (marker != 0) rm.media_ctrl.play_sound(SCALE[marker - 1]);
         RobotCtrl::sleep(0.5);
     }
+    rm.led_ctrl.turn_off(rm_define::armor_all);
 }
 
 // 29. Speed up: five steps, adding 0.1 m/s to the 0.5 m/s default each time.
