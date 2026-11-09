@@ -8,6 +8,7 @@ covered by the C++ loopback tests. Run with
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
 import socket
 import tempfile
@@ -69,9 +70,14 @@ class RunnerTest(unittest.TestCase):
         header.write_text(STUB_HEADER)
         self.start(Runner(header, Limits(run_seconds=10, stop_grace_seconds=0.5)))
 
-    def start(self, runner: Runner, allowed_origins: frozenset[str] = frozenset()) -> None:
+    def start(
+        self,
+        runner: Runner,
+        allowed_origins: frozenset[str] = frozenset(),
+        clients: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (),
+    ) -> None:
         self.runner = runner
-        self.server = make_server("127.0.0.1", 0, runner, allowed_origins)
+        self.server = make_server("127.0.0.1", 0, runner, allowed_origins, clients)
         self.port = self.server.server_address[1]
         thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         thread.start()
@@ -217,6 +223,20 @@ class RunnerTest(unittest.TestCase):
         other = self.connect()
         other.request("POST", "/stop", headers={"Origin": "http://attacker.example"})
         self.assertEqual(other.getresponse().status, 403)
+
+    def test_only_this_computer_and_allowed_networks_connect(self) -> None:
+        request = socket.socket()
+        self.addCleanup(request.close)
+
+        def accepts(address: str) -> bool:
+            return self.server.verify_request(request, (address, 50000))
+
+        self.assertTrue(accepts("127.0.0.1"))
+        self.assertFalse(accepts("192.168.5.7"))
+        self.start(self.runner, clients=(ipaddress.ip_network("192.168.5.0/24"),))
+        self.assertTrue(accepts("192.168.5.7"))
+        self.assertFalse(accepts("192.168.6.7"))
+        self.assertEqual(self.call("GET", "/status"), (200, {"state": "idle"}))
 
 
 if __name__ == "__main__":
