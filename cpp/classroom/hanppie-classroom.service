@@ -6,6 +6,7 @@ After=network-online.target
 
 [Service]
 # null admits sandboxed pages, like the sample page on a static site here.
+# For other classroom devices, add --host 0.0.0.0 --allow-client <network>.
 ExecStart=/usr/bin/python3 /opt/hanppie-classroom/runner.py --header /opt/hanppie-classroom/hanppie.h --allow-origin null
 Restart=on-failure
 # Programs run as an unprivileged throwaway user with a read-only system,

@@ -145,8 +145,9 @@ int main() {
   },
 ];
 
-// The classroom runner on the computer that opens this page.
-const SERVICE = "http://127.0.0.1:8000";
+// The classroom runner on the computer that published this page; this
+// computer when opened from a file.
+const SERVICE = `http://${location.hostname || "127.0.0.1"}:8000`;
 
 const $ = (id) => document.getElementById(id);
 const sample = $("sample"), code = $("code"), input = $("input"), output = $("output");
@@ -196,7 +197,7 @@ async function errorText(response) {
   }
 }
 
-const UNREACHABLE = "连不上课堂演示服务，请在运行服务的电脑上打开本页\n";
+const UNREACHABLE = `连不上课堂演示服务（${SERVICE}）\n`;
 const MARKER = "\n[runner] ";
 const RESULT = /\n\[runner\] (.*)\n$/;
 const REASONS = [

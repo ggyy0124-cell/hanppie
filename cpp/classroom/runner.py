@@ -16,6 +16,10 @@ as those of a static site on this computer, but also sandboxed pages of any
 site opened here. Clients without an ``Origin`` header, like curl, are not
 browsers and are accepted.
 
+Connections come from this computer only, plus the networks allowed with
+``--allow-client`` when listening on other addresses; others are closed
+unanswered.
+
 A stopped program first gets SIGTERM, which the SDK turns into a robot stop,
 and is killed after a grace period. Only the Python standard library is used.
 """
@@ -23,6 +27,7 @@ and is killed after a grace period. Only the Python standard library is used.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import select
@@ -358,20 +363,42 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], runner: Runner, origins: frozenset[str]) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        runner: Runner,
+        origins: frozenset[str],
+        clients: tuple[Network, ...],
+    ) -> None:
         self.runner = runner
         self.origins = origins
+        self.clients = clients
         super().__init__(address, _Handler)
+
+    def verify_request(self, request: object, client_address: object) -> bool:
+        assert isinstance(client_address, tuple)
+        address = ipaddress.ip_address(client_address[0])
+        return address.is_loopback or any(address in network for network in self.clients)
 
 
 def make_server(
-    host: str, port: int, runner: Runner, origins: frozenset[str] = frozenset()
+    host: str,
+    port: int,
+    runner: Runner,
+    origins: frozenset[str] = frozenset(),
+    clients: tuple[Network, ...] = (),
 ) -> ThreadingHTTPServer:
-    """Browsers may call from ``origins``, like ``http://127.0.0.1:8080`` or ``null``."""
-    return _Server((host, port), runner, origins)
+    """Browsers may call from ``origins``, like ``http://127.0.0.1:8080`` or ``null``.
+
+    Besides this computer, connections are accepted from ``clients`` networks.
+    """
+    return _Server((host, port), runner, origins, clients)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -388,12 +415,23 @@ def main(argv: list[str] | None = None) -> None:
         help="let browser pages from this origin call the service, repeatable; "
         "'null' admits sandboxed pages of any site",
     )
+    parser.add_argument(
+        "--allow-client",
+        action="append",
+        default=[],
+        type=ipaddress.ip_network,
+        metavar="NETWORK",
+        help="accept connections from this network besides this computer, like "
+        "192.168.5.0/24, repeatable; needs --host 0.0.0.0",
+    )
     parser.add_argument("--run-seconds", type=float, default=Limits.run_seconds)
     args = parser.parse_args(argv)
     if not args.header.is_file():
         parser.error(f"header not found: {args.header}")
     runner = Runner(args.header.resolve(), Limits(run_seconds=args.run_seconds), args.compiler)
-    server = make_server(args.host, args.port, runner, frozenset(args.allow_origin))
+    server = make_server(
+        args.host, args.port, runner, frozenset(args.allow_origin), tuple(args.allow_client)
+    )
     print(f"listening on http://{args.host}:{server.server_address[1]}", flush=True)
     try:
         server.serve_forever()
