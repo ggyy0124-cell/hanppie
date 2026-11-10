@@ -10,6 +10,8 @@
 //   audio/0_friday_night.opus file (Git LFS). Lab ships it with the script;
 //   here it goes through the speaker upload, which takes at most 64 KB, so the
 //   clip plays as consecutive segments with a short gap between them.
+// - friday_disco uses bounded absolute pitch at four high poses; the Lab
+//   script's cumulative upward moves exceed the host's tested pitch range.
 // - log_ctrl.print_msg prints to the terminal.
 //
 // Usage: hanppie_presets <robot-ip> <appid> <preset> [audio.opus]
@@ -629,7 +631,7 @@ void fridayDisco(RobotCtrl& rm) {
     print_msg("Beck: Because it is Friday... Friday night!");
     setAll(rm, 255, 0, 100, effect_flash);
     chassis.move_with_time(0, 0.35);
-    gimbal.rotate_with_degree(gimbal_up, 15);
+    gimbal.pitch_ctrl(15);
     for (int i = 0; i < 3; ++i) {
         chassis.move_with_time(-90, 0.26);
         gimbal.rotate_with_degree(gimbal_down, 8);
@@ -641,7 +643,7 @@ void fridayDisco(RobotCtrl& rm) {
 
     print_msg("Beck: Everybody hands up!!");
     setAll(rm, 255, 215, 0, effect_always_on);
-    gimbal.rotate_with_degree(gimbal_up, 20);
+    gimbal.pitch_ctrl(22);
     for (int i = 0; i < 5; ++i) {
         chassis.move_with_time(-90, 0.20);
         chassis.move_with_time(90, 0.20);
@@ -688,7 +690,7 @@ void fridayDisco(RobotCtrl& rm) {
 
     print_msg("Beck: Because it's Friday night!");
     setAll(rm, 255, 0, 255, effect_flash);
-    gimbal.rotate_with_degree(gimbal_up, 18);
+    gimbal.pitch_ctrl(22);
     chassis.move_with_time(0, 0.30);
     for (int i = 0; i < 4; ++i) {
         chassis.move_with_time(-90, 0.25);
@@ -703,7 +705,7 @@ void fridayDisco(RobotCtrl& rm) {
     setAll(rm, 255, 255, 255, effect_flash);
     for (int i = 0; i < 2; ++i) chassis.rotate_with_degree(clockwise, 360);
     setAll(rm, 255, 0, 255, marquee);
-    gimbal.rotate_with_degree(gimbal_up, 18);
+    gimbal.pitch_ctrl(22);
     for (int i = 0; i < 4; ++i) {
         chassis.move_with_time(-90, 0.22);
         chassis.move_with_time(90, 0.22);
