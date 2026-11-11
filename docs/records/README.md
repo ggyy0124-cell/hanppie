@@ -15,6 +15,7 @@
 
 ## 实机与原机调查
 
+- [2026-11-11 · C++ 样例实机确认](device/cpp-samples-validation-2026-11-11.md)：课堂网页收录范围与未验证边界。
 - [2026-10-25 · S1 实机验证](device/s1-live-validation-2026-10-25.md)：状态、媒体、视觉和 Lab 等本轮设备验收。
 - [2026-09-18 · 红外命中与装甲受击探测](device/s1-ir-armor-hit-probe-2026-09-18.md)。
 - [2026-08-31 · AppEnvelope 直控联调](device/s1-direct-control-2026-08-31.md)。

@@ -29,6 +29,8 @@ sudo systemctl enable --now hanppie-classroom
 
 服务只提供下面的接口，不带网页。样例网页 [`examples/classroom.html`](../examples/classroom.html) 调用发布它的电脑上的服务（网页地址的主机，8000 端口；直接打开文件时为本机）：选样例或直接写程序，需要时填输入，点「运行」实时看输出，点「停止」随时停下（Ctrl+Enter 也能运行）。把它发布到这台电脑上的静态网站，在这台电脑的浏览器里打开即可；要在教室其他设备上打开，按下面「访问范围」开放局域网访问。
 
+网页样例从已确认的 C++ 挑战卡和预置节目生成；修改源样例或收录范围后运行 `python cpp/tools/generate_classroom_samples.py`，用 `--check` 检查网页是否同步。确认范围与未验证边界见[实机记录](../../docs/records/device/cpp-samples-validation-2026-11-11.md)。
+
 命令行用法：
 
 ```bash
