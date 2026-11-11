@@ -31,6 +31,8 @@ sudo systemctl enable --now hanppie-classroom
 
 网页样例从已确认的 C++ 挑战卡和预置节目生成；修改源样例或收录范围后运行 `python cpp/tools/generate_classroom_samples.py`，用 `--check` 检查网页是否同步。确认范围与未验证边界见[实机记录](../../docs/records/device/cpp-samples-validation-2026-11-11.md)。
 
+生成单头文件后，用 `python cpp/tools/check_classroom_samples.py --header <hanppie.h 路径>` 编译网页实际收录的全部程序（不运行机器人）；可用 `--compiler` 指定编译器。CI 在 Linux 上执行该检查，覆盖 POSIX 头文件与样例辅助函数的名称冲突。
+
 命令行用法：
 
 ```bash

@@ -74,6 +74,9 @@ ignore = [
   "RUF012",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"cpp/tools/generate_classroom_samples.py" = ["RUF001"] # Chinese UI text and clearance notes.
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
