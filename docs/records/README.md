@@ -34,4 +34,5 @@
 
 ## 发布
 
+- [2026-11-13 · C++ SDK 0.0.12 恢复 edu 网页示例](releases/cpp-edu-examples-2026-11-13.md)。
 - [2026-10-02 · iOS 首版交付](releases/ios-delivery-2026-10-02.md)。

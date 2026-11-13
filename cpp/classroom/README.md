@@ -29,7 +29,7 @@ sudo systemctl enable --now hanppie-classroom
 
 服务只提供下面的接口，不带网页。样例网页 [`examples/classroom.html`](../examples/classroom.html) 调用发布它的电脑上的服务（网页地址的主机，8000 端口；直接打开文件时为本机）：选样例或直接写程序，需要时填输入，点「运行」实时看输出，点「停止」随时停下（Ctrl+Enter 也能运行）。把它发布到这台电脑上的静态网站，在这台电脑的浏览器里打开即可；要在教室其他设备上打开，按下面「访问范围」开放局域网访问。
 
-网页样例从已确认的 C++ 挑战卡和预置节目生成；修改源样例或收录范围后运行 `python cpp/tools/generate_classroom_samples.py`，用 `--check` 检查网页是否同步。确认范围与未验证边界见[实机记录](../../docs/records/device/cpp-samples-validation-2026-11-11.md)。
+网页包括 edu 入门示例及已确认的 ctrl 挑战卡和预置节目。edu「前进、转弯」「走正方形」的源码位于 `cpp/examples/edu/`，尚未实机验证，选中后代码开头显示验证状态和场地说明。修改源样例或收录范围后运行 `python cpp/tools/generate_classroom_samples.py`，用 `--check` 检查网页是否同步。ctrl 样例的确认范围与未验证边界见[实机记录](../../docs/records/device/cpp-samples-validation-2026-11-11.md)。
 
 生成单头文件后，用 `python cpp/tools/check_classroom_samples.py --header <hanppie.h 路径>` 编译网页实际收录的全部程序（不运行机器人）；可用 `--compiler` 指定编译器。CI 在 Linux 上执行该检查，覆盖 POSIX 头文件与样例辅助函数的名称冲突。
 

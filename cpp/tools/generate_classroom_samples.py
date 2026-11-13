@@ -1,4 +1,4 @@
-"""Regenerate the self-contained classroom page from the verified C++ examples."""
+"""Regenerate the classroom page from edu and verified ctrl C++ examples."""
 
 from __future__ import annotations
 
@@ -105,6 +105,19 @@ def examples() -> list[dict[str, str]]:
             "code": "#include <bits/stdc++.h>\nusing namespace std;\n\nint main() {\n    int n;\n    cin >> n;\n    long long sum = 0;\n    for (int i = 0; i < n; ++i) { int x; cin >> x; sum += x; }\n    cout << sum << endl;\n}\n",
         }
     ]
+    for title, filename in (
+        ("前进、转弯（edu 入门接口）", "forward_turn.cpp"),
+        ("走正方形（edu 入门接口）", "square.cpp"),
+    ):
+        source = (ROOT / "examples" / "edu" / filename).read_text(encoding="utf-8")
+        samples.append(
+            {
+                "name": title,
+                "input": "",
+                "code": "// 尚未实机验证；场地和操作要求见下方注释。\n"
+                + source.replace('"hanppie/hanppie.hpp"', '"hanppie.h"'),
+            }
+        )
     drive = (
         (ROOT / "examples" / "drive.cpp")
         .read_text(encoding="utf-8")

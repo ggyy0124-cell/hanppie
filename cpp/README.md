@@ -2,7 +2,7 @@
 
 `src/hanppie` Python 直控库的 C++11 移植：走 RoboMaster S1 出厂开放的 App 协议端口，提供 AppID 认领、App 会话、50 Hz 控制循环、底盘/云台/灯效/音效控制、遥测、音视频流和 Lab 脚本上传。连接序列、遥控模式进出表和灯效载荷与 Python 版逐字节比对；底盘和云台的运动路径以已在实机验证的 App（`packages/robot-core`）为准，与 Python 版不同，见下文「运动与安全」。两者不互相依赖。
 
-当前版本 **0.0.11**（`HANPPIE_VERSION`，定义在 `include/hanppie/hanppie.hpp`，CMake 项目版本从这里读取）。
+当前版本 **0.0.12**（`HANPPIE_VERSION`，定义在 `include/hanppie/hanppie.hpp`，CMake 项目版本从这里读取）。
 
 > 当前状态：离线单测和本机回环集成测试通过。运动指令载荷与 App 的测试向量逐字节一致，遥控模式进出表与 App 逐行核对一致。App 本身经过实机验证，但这份 C++ 实现的运动路径**尚未连接实机验证**。
 
@@ -117,6 +117,8 @@ int main() {
 以上只在模拟机器人上测试过，**尚未连接实机**。
 
 老师上课演示可以用 [课堂演示服务](classroom/README.md)：在 Ubuntu 上通过 HTTP 提交程序，服务编译运行并实时返回输出，可随时停止。
+
+网页提供 edu「前进、转弯」和「走正方形」两个入门示例，源码位于 [`examples/edu`](examples/edu)。这两个程序尚未实机验证，场地要求见代码注释；动作返回失败时停止后续步骤并断开连接。
 
 ## 对外接口
 

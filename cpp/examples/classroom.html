@@ -67,6 +67,16 @@ const SAMPLES = [
     "code": "#include <bits/stdc++.h>\nusing namespace std;\n\nint main() {\n    int n;\n    cin >> n;\n    long long sum = 0;\n    for (int i = 0; i < n; ++i) { int x; cin >> x; sum += x; }\n    cout << sum << endl;\n}\n"
   },
   {
+    "name": "前进、转弯（edu 入门接口）",
+    "input": "",
+    "code": "// 尚未实机验证；场地和操作要求见下方注释。\n// edu: move forward for one second, turn left, then beep.\n// Not yet verified on hardware. Keep 0.8 m clear in front and 0.5 m elsewhere.\n// Close other control apps; an operator must remain beside the robot.\n#include \"hanppie.h\"\n\nusing namespace hanppie::edu;\n\nint main() {\n    if (!connect()) return 1;\n    if (!forward(1) || !turnLeft(90) || !beep()) {\n        disconnect();\n        return 1;\n    }\n    disconnect();\n    return 0;\n}\n"
+  },
+  {
+    "name": "走正方形（edu 入门接口）",
+    "input": "",
+    "code": "// 尚未实机验证；场地和操作要求见下方注释。\n// edu: four one-second forward moves, each followed by a right turn.\n// Not yet verified on hardware. Keep 1 m clear on all sides.\n// Distance is estimated from time. Close other control apps; stay beside the robot.\n#include \"hanppie.h\"\n\nusing namespace hanppie::edu;\n\nint main() {\n    if (!connect()) return 1;\n    for (int side = 0; side < 4; ++side) {\n        if (!forward(1) || !turnRight(90)) {\n            disconnect();\n            return 1;\n        }\n    }\n    disconnect();\n    return 0;\n}\n"
+  },
+  {
     "name": "基础驱动：前进",
     "input": "",
     "code": "// 前方 0.7 米，其他方向各 0.5 米；人在旁可断电。\n// Drive a RoboMaster S1 forward for one second with the Lab-style interface.\n//\n// Usage: hanppie_drive [<robot-ip> <appid>]\n// Without arguments the robot is found from its network broadcast.\n#include <cstdio>\n#include <exception>\n#include <memory>\n\n#include \"hanppie.h\"\n\nusing namespace hanppie::ctrl;\n\nint main(int argc, char** argv) {\n    if (argc != 1 && argc != 3) {\n        std::fprintf(stderr, \"usage: %s [<robot-ip> <appid>]\\n\", argv[0]);\n        return 2;\n    }\n    try {\n        // Leaving this scope stops all motion and exits control mode.\n        std::unique_ptr<RobotCtrl> rm(argc == 3 ? new RobotCtrl(argv[1], argv[2]) : new RobotCtrl());\n        rm->led_ctrl.set_top_led(rm_define::armor_all, 0, 255, 0, rm_define::effect_always_on);\n        rm->chassis_ctrl.set_trans_speed(0.2);\n        rm->chassis_ctrl.move_with_time(0, 1);\n        std::printf(\"chassis yaw %.1f degrees\\n\", rm->chassis_ctrl.get_attitude(rm_define::chassis_yaw));\n    } catch (const std::exception& error) {\n        std::fprintf(stderr, \"error: %s\\n\", error.what());\n        return 1;\n    }\n    return 0;\n}\n"
