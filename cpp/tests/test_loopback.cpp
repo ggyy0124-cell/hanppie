@@ -118,6 +118,9 @@ public:
     void pushFrom(std::uint8_t sender, std::uint8_t attr, std::uint8_t cmdset, std::uint8_t cmdid,
                   const Bytes& payload) {
         std::lock_guard<std::mutex> lock(lock_);
+        // Simulators may start before discovery completes. Telemetry has no
+        // recipient until the direct session handshake has supplied both IDs.
+        if (!hasPeer_ || session_.size() != 2) return;
         Bytes duss = buildDuss(sender, HOST_MOBILE, attr, cmdset, cmdid, payload, sequence_++);
         Bytes packet(20, 0);
         packet[2] = session_[0];
@@ -552,8 +555,13 @@ TEST(loopback_session_matches_the_app_flow) {
     robot.fireInfrared(2.0);
     robot.stop();
     std::size_t haltMark = fake.mark();
-    sleepMs(60);
-    std::vector<Captured> halted = fake.since(haltMark);
+    const double haltDeadline = monotonicSeconds() + 0.3;
+    std::vector<Captured> halted;
+    do {
+        sleepMs(10);
+        halted = fake.since(haltMark);
+    } while (countMotion(halted, isChassisStop, idleChassisPayload()) < 2 &&
+             monotonicSeconds() < haltDeadline);
     CHECK(!sawControlPayload(halted, trigger));
     CHECK_EQ(countMotion(halted, isChassisSpeed), 0);
     CHECK(countMotion(halted, isChassisStop, idleChassisPayload()) >= 2);
@@ -769,9 +777,12 @@ namespace {
 // rotation commands the SDK sends and pushes 10 Hz telemetry back, like S1.
 class MotionSimulator {
 public:
-    MotionSimulator(FakeRobot& fake, double chassisYaw)
+    MotionSimulator(FakeRobot& fake, double chassisYaw, double attitudeSign = 1,
+                    double wobble = 0, double stopCoast = 0)
         : fake_(fake), done_(false), cursor_(fake.mark()), yaw_(0), pitch_(0),
-          chassisYaw_(chassisYaw), yawSpeed_(0), pitchSpeed_(0), chassisRate_(0) {
+          chassisYaw_(chassisYaw), yawSpeed_(0), pitchSpeed_(0), chassisRate_(0),
+          attitudeSign_(attitudeSign), wobble_(wobble), stopCoast_(stopCoast), tick_(0),
+          coasted_(false) {
         thread_ = std::thread(&MotionSimulator::run, this);
     }
     ~MotionSimulator() {
@@ -783,6 +794,10 @@ public:
         yaw = yaw_;
         pitch = pitch_;
         chassisYaw = chassisYaw_;
+    }
+    void driftHeading(double degrees) {
+        std::lock_guard<std::mutex> lock(lock_);
+        chassisYaw_ += degrees;
     }
 
 private:
@@ -825,10 +840,17 @@ private:
             Bytes attitude(2, 0);
             {
                 std::lock_guard<std::mutex> lock(lock_);
+                double previousRate = chassisRate_;
                 observe(items);
                 yaw_ += yawSpeed_ * 0.1;
                 pitch_ += pitchSpeed_ * 0.1;
                 chassisYaw_ += chassisRate_ * 0.1;
+                // One deterministic coast after the first stop, plus alternating
+                // measurement wobble while moving. Physical yaw stays observable.
+                if (!coasted_ && previousRate != 0 && chassisRate_ == 0 && stopCoast_ != 0) {
+                    chassisYaw_ += previousRate > 0 ? stopCoast_ : -stopCoast_;
+                    coasted_ = true;
+                }
                 if (chassisYaw_ > 180) chassisYaw_ -= 360;
                 if (chassisYaw_ <= -180) chassisYaw_ += 360;
                 gimbal[1] = 0x0A;
@@ -840,7 +862,9 @@ private:
                 }
                 gimbal.push_back(0);
                 attitude[1] = 13;
-                float angles[3] = {static_cast<float>(chassisYaw_), 0.0f, 0.0f};
+                double noise = chassisRate_ == 0 ? 0 : (++tick_ % 2 ? wobble_ : -wobble_);
+                float angles[3] = {static_cast<float>(attitudeSign_ * chassisYaw_ + noise),
+                                   0.0f, 0.0f};
                 for (int a = 0; a < 3; ++a) {
                     std::uint32_t bits;
                     std::memcpy(&bits, &angles[a], sizeof(bits));
@@ -858,6 +882,9 @@ private:
     std::mutex lock_;
     double yaw_, pitch_, chassisYaw_;
     double yawSpeed_, pitchSpeed_, chassisRate_;
+    double attitudeSign_, wobble_, stopCoast_;
+    unsigned tick_;
+    bool coasted_;
     std::thread thread_;
 };
 
@@ -871,6 +898,39 @@ bool sawDuss(const std::vector<Captured>& items, std::uint8_t cmdset, std::uint8
 }
 
 }  // namespace
+
+namespace {
+
+void checkTurnWithWobble(int direction, double degrees, double attitudeSign) {
+    FakeRobot fake;
+    Robot robot("127.0.0.1", APPID);
+    robot.connection.suspendIdleKeepalive = true;
+    CHECK(robot.initialize("sta", "udp", 5.0));
+    MotionSimulator sim(fake, 170, attitudeSign, 3, 4);
+    ctrl::RobotCtrl rm(robot);
+    rm.chassis_ctrl.set_rotate_speed(60);
+    rm.chassis_ctrl.rotate_with_degree(direction, degrees);
+    double yaw, pitch, chassisYaw;
+    sim.angles(yaw, pitch, chassisYaw);
+    double target = 170 + (direction == ctrl::rm_define::clockwise ? degrees : -degrees);
+    CHECK(std::fabs(ctrl::angleDifference(chassisYaw, target)) <= 1.1);
+    double stopped = chassisYaw;
+    sleepMs(350);
+    sim.angles(yaw, pitch, chassisYaw);
+    CHECK(std::fabs(ctrl::angleDifference(chassisYaw, stopped)) < 0.25);
+    CHECK(rm.setpoint().z == 0);
+    CHECK_EQ(rm.chassis_ctrl.yaw_polarity(), static_cast<int>(attitudeSign));
+}
+
+}  // namespace
+
+TEST(chassis_turn_rejects_wobble_and_corrects_stop_coast) {
+    checkTurnWithWobble(ctrl::rm_define::clockwise, 90, 1);
+}
+
+TEST(chassis_turn_supports_reversed_yaw_left_turn_and_multiple_wraps) {
+    checkTurnWithWobble(ctrl::rm_define::anticlockwise, 450, -1);
+}
 
 TEST(lab_style_ctrl_closes_angle_loops_on_telemetry) {
     FakeRobot fake;
@@ -1171,6 +1231,7 @@ TEST(edu_entry_finds_the_robot_and_moves_within_limits) {
     CHECK(!edu::forward(1));  // not connected yet
     FakeRobot fake;
     fake.ack(CMDSET_RM, CMD_RM_PLAY_SOUND, Bytes(1, 0));
+    MotionSimulator sim(fake, 0.0);
     bool connected;
     {
         Broadcaster broadcaster;
@@ -1178,7 +1239,6 @@ TEST(edu_entry_finds_the_robot_and_moves_within_limits) {
     }
     CHECK(connected);
     CHECK(edu::connected());
-    MotionSimulator sim(fake, 0.0);
 
     std::size_t mark = fake.mark();
     double start = monotonicSeconds();
@@ -1206,6 +1266,16 @@ TEST(edu_entry_finds_the_robot_and_moves_within_limits) {
     sleepMs(200);
     sim.angles(yaw, pitch, chassisYaw);
     CHECK(std::fabs(ctrl::angleDifference(chassisYaw, 90)) < 3.0);
+
+    // Translation can drift yaw; the next turn must end on the original path's
+    // target, rather than adding ninety degrees to that disturbed heading.
+    for (int side = 1; side < 4; ++side) {
+        sim.driftHeading(4);
+        sleepMs(200);
+        CHECK(edu::turnRight(90));
+        sim.angles(yaw, pitch, chassisYaw);
+        CHECK(std::fabs(ctrl::angleDifference(chassisYaw, (side + 1) * 90)) < 1.5);
+    }
 
     mark = fake.mark();
     CHECK(edu::beep());
@@ -1238,6 +1308,7 @@ TEST(edu_entry_stops_the_robot_on_sigterm) {
         ::_exit(ok ? 0 : 3);
     }
     FakeRobot fake;
+    MotionSimulator sim(fake, 0.0);
     {
         Broadcaster broadcaster;
         double deadline = monotonicSeconds() + 10;
@@ -1266,6 +1337,7 @@ TEST(lab_style_entry_owns_its_robot) {
         CHECK(rm.robot.controlMode());
         CHECK(rm.robot.armed());
     }
-    // No broadcast heard: discovery reports it instead of waiting forever.
-    CHECK_THROWS(ctrl::RobotCtrl::connectDiscovered(0.3), TimeoutError);
+    // An exhausted discovery budget must time out even if a real robot is
+    // broadcasting on this network; never connect to hardware in this check.
+    CHECK_THROWS(ctrl::RobotCtrl::connectDiscovered(0), TimeoutError);
 }

@@ -1,12 +1,14 @@
 #include "hanppie/edu.hpp"
 
 #include <cstdio>
+#include <cmath>
 #include <exception>
 #include <memory>
 #include <mutex>
 
 #include "hanppie/connection.hpp"
 #include "hanppie/ctrl.hpp"
+#include "edu_heading.hpp"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -49,6 +51,7 @@ public:
             ctrl_.reset(new ctrl::RobotCtrl());
             ctrl_->chassis_ctrl.set_trans_speed(MOVE_SPEED);
             ctrl_->chassis_ctrl.set_rotate_speed(TURN_SPEED);
+            heading_ = detail::HeadingTarget(ctrl_->chassis_ctrl.get_stable_heading());
         } catch (const TimeoutError&) {
             ctrl_.reset();
             report("no robot found. Turn it on, join its network, close other control apps, "
@@ -108,9 +111,30 @@ public:
         return false;
     }
 
+    bool turn(const char* name, double degrees, int direction) {
+        return run(name, [&](ctrl::RobotCtrl& rm) {
+            if (degrees == 0) return;
+            const double offset = heading_.next(
+                direction == ctrl::rm_define::clockwise ? degrees : -degrees);
+            // Preserve the requested direction and full-turn semantics. This
+            // normal turn also learns native yaw polarity without a probe move.
+            rm.chassis_ctrl.rotate_with_degree(direction, degrees);
+            const int polarity = rm.chassis_ctrl.yaw_polarity();
+            if (polarity != 0) {
+                const double yaw = rm.chassis_ctrl.get_stable_heading();
+                const double error = heading_.correction(offset, yaw, polarity);
+                rm.chassis_ctrl.rotate_with_degree(error >= 0 ? ctrl::rm_define::clockwise
+                                                              : ctrl::rm_define::anticlockwise,
+                                                    std::fabs(error));
+            }
+            heading_.commit(offset);
+        });
+    }
+
 private:
     std::mutex lock_;
     std::unique_ptr<ctrl::RobotCtrl> ctrl_;
+    detail::HeadingTarget heading_;
 };
 
 Session& session() {
@@ -174,9 +198,7 @@ bool drive(const char* name, double seconds, double direction) {
 
 bool turn(const char* name, double degrees, int direction) {
     if (!checkRange(name, degrees, MAX_DEGREES)) return false;
-    return session().run(name, [&](ctrl::RobotCtrl& rm) {
-        rm.chassis_ctrl.rotate_with_degree(direction, degrees);
-    });
+    return session().turn(name, degrees, direction);
 }
 
 }  // namespace

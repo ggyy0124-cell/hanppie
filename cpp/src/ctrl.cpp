@@ -26,6 +26,9 @@ const double LEASE_SECONDS = 0.25;
 const double APPROACH_GAIN = 3.0;
 const double APPROACH_MIN_RATE = 3.0;
 const double TELEMETRY_STALE_SECONDS = 0.5;
+const double CHASSIS_ANGLE_TOLERANCE = 1.0;
+const double CHASSIS_SETTLED_DELTA = 0.25;
+const int CHASSIS_SETTLED_SAMPLES = 3;
 // Onboard Lab detect_marker_and_aim: 96 x 54 degree field, aim point
 // (0.5, 0.53), 1 degree tolerance, 5 s budget.
 const double CAMERA_FOV_YAW = 96.0;
@@ -66,6 +69,20 @@ ChassisAttitude freshAttitude(Robot& robot, double after) {
         throw std::runtime_error("chassis attitude telemetry unavailable");
     }
     return sample;
+}
+
+ChassisAttitude stableAttitude(Robot& robot) {
+    const double deadline = monotonicSeconds() + 5.0;
+    ChassisAttitude last = freshAttitude(robot, monotonicSeconds());
+    int stable = 0;
+    while (stable < CHASSIS_SETTLED_SAMPLES) {
+        if (monotonicSeconds() >= deadline) throw std::runtime_error("chassis did not settle");
+        ChassisAttitude sample = freshAttitude(robot, last.receivedAt);
+        stable = std::fabs(angleDifference(sample.yawDegrees, last.yawDegrees)) <=
+                 CHASSIS_SETTLED_DELTA ? stable + 1 : 0;
+        last = sample;
+    }
+    return last;
 }
 
 // Drive the gimbal to absolute chassis-relative angles. Axes passed as NAN are
@@ -362,19 +379,48 @@ void ChassisCtrl::rotate_with_degree(int direction, double degree) {
     int sign = rotationSign(direction);
     checkRange(degree, 0, 1800, "degree");
     if (rotateSpeed_ == 0 || degree == 0) return;
-    // Accumulate unwrapped yaw change; the magnitude is used so the result
-    // does not depend on the attitude topic's yaw sign convention.
+    // Accumulate signed yaw change before taking its magnitude: wobble must
+    // cancel rather than count as forward progress. The magnitude keeps this
+    // independent of the attitude topic's yaw sign convention, including wraps.
     double deadline = monotonicSeconds() + degree / APPROACH_MIN_RATE + 5.0;
     try {
-        ChassisAttitude last = freshAttitude(rm_.robot, 0.0);
+        stop();
+        ChassisAttitude last = stableAttitude(rm_.robot);
         double turned = 0.0;
+        int settled = 0;
+        bool confirming = false;
+        double correctionSign = 1.0;
         for (;;) {
-            double rate = approachRate(degree - turned, rotateSpeed_);
-            if (rate <= 0.0) break;
+            double error = degree - std::fabs(turned);
+            if (!confirming && (std::fabs(error) <= CHASSIS_ANGLE_TOLERANCE ||
+                                error * correctionSign < 0)) {
+                confirming = true;
+            }
+            double rate = confirming ? 0 : correctionSign * approachRate(
+                std::fabs(error), rotateSpeed_, CHASSIS_ANGLE_TOLERANCE);
             if (monotonicSeconds() >= deadline) throw std::runtime_error("chassis rotate timed out");
+            // Finish each movement by holding still. Only choose a correction
+            // direction after fresh, stable telemetry, never on a noisy crossing.
             rm_.setChassis(0, 0, sign * rate);
             ChassisAttitude sample = freshAttitude(rm_.robot, last.receivedAt);
-            turned += std::fabs(angleDifference(sample.yawDegrees, last.yawDegrees));
+            double delta = angleDifference(sample.yawDegrees, last.yawDegrees);
+            turned += delta;
+            if (confirming && std::fabs(delta) <= CHASSIS_SETTLED_DELTA) {
+                if (++settled >= CHASSIS_SETTLED_SAMPLES) {
+                    error = degree - std::fabs(turned);
+                    if (std::fabs(error) <= CHASSIS_ANGLE_TOLERANCE) {
+                        if (std::fabs(turned) > CHASSIS_ANGLE_TOLERANCE) {
+                            yawPolarity_ = turned > 0 ? sign : -sign;
+                        }
+                        break;
+                    }
+                    correctionSign = error > 0 ? 1.0 : -1.0;
+                    confirming = false;
+                    settled = 0;
+                }
+            } else {
+                settled = 0;
+            }
             last = sample;
         }
     } catch (...) {
@@ -391,6 +437,11 @@ void ChassisCtrl::move_and_rotate(double direction_angle, int direction) {
 }
 
 void ChassisCtrl::stop() { rm_.setChassis(0, 0, 0); }
+
+double ChassisCtrl::get_stable_heading() {
+    stop();
+    return stableAttitude(rm_.robot).yawDegrees;
+}
 
 double ChassisCtrl::get_attitude(int attitude) {
     ChassisAttitude sample;
