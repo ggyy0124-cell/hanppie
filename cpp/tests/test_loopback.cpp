@@ -555,8 +555,13 @@ TEST(loopback_session_matches_the_app_flow) {
     robot.fireInfrared(2.0);
     robot.stop();
     std::size_t haltMark = fake.mark();
-    sleepMs(60);
-    std::vector<Captured> halted = fake.since(haltMark);
+    const double haltDeadline = monotonicSeconds() + 0.3;
+    std::vector<Captured> halted;
+    do {
+        sleepMs(10);
+        halted = fake.since(haltMark);
+    } while (countMotion(halted, isChassisStop, idleChassisPayload()) < 2 &&
+             monotonicSeconds() < haltDeadline);
     CHECK(!sawControlPayload(halted, trigger));
     CHECK_EQ(countMotion(halted, isChassisSpeed), 0);
     CHECK(countMotion(halted, isChassisStop, idleChassisPayload()) >= 2);
