@@ -118,6 +118,9 @@ public:
     void pushFrom(std::uint8_t sender, std::uint8_t attr, std::uint8_t cmdset, std::uint8_t cmdid,
                   const Bytes& payload) {
         std::lock_guard<std::mutex> lock(lock_);
+        // Simulators may start before discovery completes. Telemetry has no
+        // recipient until the direct session handshake has supplied both IDs.
+        if (!hasPeer_ || session_.size() != 2) return;
         Bytes duss = buildDuss(sender, HOST_MOBILE, attr, cmdset, cmdid, payload, sequence_++);
         Bytes packet(20, 0);
         packet[2] = session_[0];
