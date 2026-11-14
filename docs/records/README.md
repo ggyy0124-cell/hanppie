@@ -15,6 +15,9 @@
 
 ## 实机与原机调查
 
+- [2026-11-15 · C++ 课堂演示后续确认](device/cpp-classroom-validation-2026-11-15.md)：媒体保存、红外接收、卡14动态跟随及带音轨节目。
+- [2026-11-15 · 音轨启动期间灯光应答延迟](device/cpp-audio-led-validation-2026-11-15.md)：灯光等待预算、无运动对照与舞蹈复测。
+
 - [2026-11-14 · C++ 底盘转角修正](device/cpp-turn-validation-2026-11-14.md)：净角度累计、停车确认及 edu 现场复测。
 - [2026-11-11 · C++ 样例实机确认](device/cpp-samples-validation-2026-11-11.md)：课堂网页收录范围与未验证边界。
 - [2026-10-25 · S1 实机验证](device/s1-live-validation-2026-10-25.md)：状态、媒体、视觉和 Lab 等本轮设备验收。

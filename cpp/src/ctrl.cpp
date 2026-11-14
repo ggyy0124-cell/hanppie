@@ -541,7 +541,8 @@ void LedCtrl::set_led(int comp, int r, int g, int b, int effect) {
     rm_.robot.request(
         protocol::HOST_MOBILE, protocol::HOST_HDVT_UAV, protocol::CMDSET_RM,
         protocol::CMD_RM_LED_COLOR_SET,
-        buildLedPayload(static_cast<std::uint32_t>(comp) & rm_define::armor_all, r, g, b, name));
+        buildLedPayload(static_cast<std::uint32_t>(comp) & rm_define::armor_all, r, g, b, name),
+        LED_ACK_TIMEOUT_SECONDS);
 }
 
 void LedCtrl::set_top_led(int comp, int r, int g, int b, int effect) {
