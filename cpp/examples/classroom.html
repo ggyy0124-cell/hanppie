@@ -69,12 +69,12 @@ const SAMPLES = [
   {
     "name": "前进、转弯（edu 入门接口）",
     "input": "",
-    "code": "// 转角修正待完整实机复测；场地和操作要求见下方注释。\n// 转向会在停车后确认姿态稳定，未能到位时结束程序并返回失败。\n// edu 按开局朝向累计转向目标，下一次转向会补偿前进时的偏航。\n// edu: move forward for one second, turn left, then beep.\n// Hardware demonstration verified. Keep 0.8 m clear in front and 0.5 m elsewhere.\n// Close other control apps; an operator must remain beside the robot.\n#include \"hanppie.h\"\n\nusing namespace hanppie::edu;\n\nint main() {\n    if (!connect()) return 1;\n    if (!forward(1) || !turnLeft(90) || !beep()) {\n        disconnect();\n        return 1;\n    }\n    disconnect();\n    return 0;\n}\n"
+    "code": "// 已完成实机演示验证；场地和操作要求见下方注释。\n// 转向会在停车后确认姿态稳定，未能到位时结束程序并返回失败。\n// edu 按开局朝向累计转向目标，下一次转向会补偿前进时的偏航。\n// edu: move forward for one second, turn left, then beep.\n// Hardware demonstration verified. Keep 0.8 m clear in front and 0.5 m elsewhere.\n// Close other control apps; an operator must remain beside the robot.\n#include \"hanppie.h\"\n\nusing namespace hanppie::edu;\n\nint main() {\n    if (!connect()) return 1;\n    if (!forward(1) || !turnLeft(90) || !beep()) {\n        disconnect();\n        return 1;\n    }\n    disconnect();\n    return 0;\n}\n"
   },
   {
     "name": "走正方形（edu 入门接口）",
     "input": "",
-    "code": "// 转角修正待完整实机复测；场地和操作要求见下方注释。\n// 转向会在停车后确认姿态稳定，未能到位时结束程序并返回失败。\n// edu 按开局朝向累计转向目标，下一次转向会补偿前进时的偏航。\n// edu: four one-second forward moves, each followed by a right turn.\n// Hardware demonstration verified. Keep 1 m clear on all sides.\n// Distance is estimated from time. Close other control apps; stay beside the robot.\n#include <cstdio>\n#include \"hanppie.h\"\n\nusing namespace hanppie::edu;\n\nint main() {\n    if (!connect()) return 1;\n    for (int side = 0; side < 4; ++side) {\n        std::printf(\"Side %d/4: forward 1 s, then turn right 90 degrees\\n\", side + 1);\n        std::fflush(stdout);\n        if (!forward(1) || !turnRight(90)) {\n            disconnect();\n            return 1;\n        }\n    }\n    disconnect();\n    return 0;\n}\n"
+    "code": "// 已完成实机演示验证；场地和操作要求见下方注释。\n// 转向会在停车后确认姿态稳定，未能到位时结束程序并返回失败。\n// edu 按开局朝向累计转向目标，下一次转向会补偿前进时的偏航。\n// edu: four one-second forward moves, each followed by a right turn.\n// Hardware demonstration verified. Keep 1 m clear on all sides.\n// Distance is estimated from time. Close other control apps; stay beside the robot.\n#include <cstdio>\n#include \"hanppie.h\"\n\nusing namespace hanppie::edu;\n\nint main() {\n    if (!connect()) return 1;\n    for (int side = 0; side < 4; ++side) {\n        std::printf(\"Side %d/4: forward 1 s, then turn right 90 degrees\\n\", side + 1);\n        std::fflush(stdout);\n        if (!forward(1) || !turnRight(90)) {\n            disconnect();\n            return 1;\n        }\n    }\n    disconnect();\n    return 0;\n}\n"
   },
   {
     "name": "基础驱动：前进",
