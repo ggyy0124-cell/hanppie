@@ -19,6 +19,10 @@
 
 namespace hanppie {
 
+// Audio startup can delay a successful LED ACK beyond one second. This is a
+// bounded wait budget, not an added sleep or an automatic retry.
+const double LED_ACK_TIMEOUT_SECONDS = 3.0;
+
 const std::uint16_t LED_ARMOR_ALL_MASK = 0xFF;
 const std::uint32_t LED_SUBCOMPONENT_ALL = 0x3F;
 const std::uint32_t LED_SUBCOMPONENT_TOP = 0x30;
@@ -202,8 +206,8 @@ public:
 
     // component is all, top, gimbal, or bottom.
     RobotAck setLed(const std::string& component = "all", int red = 255, int green = 255,
-                    int blue = 255, const std::string& effect = "on", double timeout = 1.0);
-    RobotAck setMuzzleLed(bool fire, bool enabled, double timeout = 1.0);
+                    int blue = 255, const std::string& effect = "on", double timeout = LED_ACK_TIMEOUT_SECONDS);
+    RobotAck setMuzzleLed(bool fire, bool enabled, double timeout = LED_ACK_TIMEOUT_SECONDS);
     RobotAck playSound(std::uint32_t soundId, double timeout = 1.0);
     RobotAck setSpeakerVolume(int volume, double timeout = 1.0);
     // Take a photo to the SD card, switching the camera to photo mode first

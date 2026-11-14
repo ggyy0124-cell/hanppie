@@ -135,19 +135,42 @@ void figureEight(RobotCtrl& rm) {
     rm.chassis_ctrl.stop();
 }
 
-// 14. Gimbal as a sensor: drive towards the gimbal heading for 10 s. Turn the
-//     gimbal with the App or another program while this runs.
+// 14. Follow the same controller's bounded gimbal sweep: left, right, centre.
+// A second App cannot share the session.
 void gimbalSensor(RobotCtrl& rm) {
+    rm.gimbal_ctrl.recenter();
     rm.chassis_ctrl.set_trans_speed(0.3);
-    double end = now() + 10;
-    while (now() < end) {
-        double yaw = rm.gimbal_ctrl.get_axis_angle(rm_define::gimbal_axis_yaw);
-        while (yaw > 180) yaw -= 360;
-        while (yaw < -180) yaw += 360;
-        rm.chassis_ctrl.move(yaw);
-        RobotCtrl::sleep(0.1);
+    const double start = now();
+    double last = 0;
+    int shown = -1;
+    try {
+        while (now() - start < 10) {
+            const double elapsed = now() - start;
+            const int phase = elapsed < 3 ? 0 : (elapsed < 7 ? 1 : 2);
+            const double target = phase == 0 ? -15 : (phase == 1 ? 15 : 0);
+            hanppie::GimbalTelemetry sample;
+            if (!rm.robot.waitForGimbal(sample, last, 0.5)) {
+                throw std::runtime_error("gimbal telemetry timed out");
+            }
+            last = sample.receivedAt;
+            const double yaw = sample.yawDegrees();
+            rm.gimbal_ctrl.rotate_with_speed(approachRate(target - yaw, 30), 0);
+            rm.chassis_ctrl.move(angleDifference(yaw, 0));
+            if (shown != phase) {
+                shown = phase;
+                std::printf("phase %d/3: gimbal target %.0f degrees\n", phase + 1, target);
+                std::fflush(stdout);
+            }
+            RobotCtrl::sleep(0.1);
+        }
+    } catch (...) {
+        rm.chassis_ctrl.stop();
+        rm.gimbal_ctrl.stop();
+        throw;
     }
     rm.chassis_ctrl.stop();
+    rm.gimbal_ctrl.stop();
+    rm.gimbal_ctrl.recenter();
 }
 
 // 15. Gesture photo: keep waiting for the capture pose and take a photo.

@@ -44,7 +44,7 @@ const std::uint32_t NOTES[8] = {
     rm_define::media_sound_solmization_1B, rm_define::media_sound_solmization_2C,
 };
 
-std::string soundtrack;  // friday_disco audio file, if given
+hanppie::Bytes soundtrack;  // encoded audio, loaded before connecting
 
 void print_msg(const std::string& message) {
     std::printf("%s\n", message.c_str());
@@ -508,10 +508,7 @@ void fridayDisco(RobotCtrl& rm) {
     // The 88.16 s soundtrack plays alongside the dance.
     std::unique_ptr<Soundtrack> music;
     if (!soundtrack.empty()) {
-        std::ifstream file(soundtrack.c_str(), std::ios::binary);
-        hanppie::Bytes audio((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-        if (audio.empty()) throw std::runtime_error("cannot read " + soundtrack);
-        music.reset(new Soundtrack(rm, audio));
+        music.reset(new Soundtrack(rm, soundtrack));
     }
 
     // 0.00s - 14.04s: 开场站桩 + 自带干冰喷雾 + 主歌律动
@@ -779,8 +776,12 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "unknown preset %s; see --list\n", argv[3]);
         return 2;
     }
-    if (argc == 5) soundtrack = argv[4];
     try {
+        if (argc == 5) {
+            std::ifstream file(argv[4], std::ios::binary);
+            soundtrack.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+            if (soundtrack.empty()) throw std::runtime_error("cannot read audio file");
+        }
         std::printf("preset %s: %s\n", preset->name, preset->title);
         {
             // Leaving this scope stops all motion and exits control mode.

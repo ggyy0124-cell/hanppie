@@ -1341,3 +1341,33 @@ TEST(lab_style_entry_owns_its_robot) {
     // broadcasting on this network; never connect to hardware in this check.
     CHECK_THROWS(ctrl::RobotCtrl::connectDiscovered(0), TimeoutError);
 }
+
+// Audio playback on hardware delayed a successful LED ACK to 1.415 s.
+// Keep both direct and Lab-style LED callers on the same bounded budget.
+TEST(led_requests_accept_audio_startup_delay_and_still_reject_errors) {
+    FakeRobot fake;
+    Robot robot("127.0.0.1", APPID);
+    CHECK(robot.initialize());
+    ctrl::RobotCtrl rm(robot);
+    fake.respond([](const DussFrame& frame, Bytes& answer) {
+        if (frame.cmdset != CMDSET_RM || frame.cmdid != CMD_RM_LED_COLOR_SET) return false;
+        sleepMs(1400);
+        answer = Bytes(1, 0);
+        return true;
+    });
+    CHECK(robot.setLed("all", 255, 255, 255, "flash").accepted());
+    rm.led_ctrl.set_top_led(ctrl::rm_define::armor_top_all, 255, 255, 255,
+                            ctrl::rm_define::effect_flash);
+    fake.respond(FakeRobot::Responder());
+    fake.ack(CMDSET_RM, CMD_RM_LED_COLOR_SET, Bytes(1, 7));
+    CHECK_THROWS(robot.setLed(), RequestRejected);
+    fake.respond([](const DussFrame& frame, Bytes& answer) {
+        if (frame.cmdset != CMDSET_RM || frame.cmdid != CMD_RM_LED_COLOR_SET) return false;
+        sleepMs(200);
+        answer = Bytes(1, 0);
+        return true;
+    });
+    CHECK_THROWS(robot.setLed("all", 255, 255, 255, "on", 0.05), TimeoutError);
+    // Let the late reply clear before controller teardown.
+    sleepMs(250);
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import sys
@@ -20,7 +21,22 @@ CARDS: tuple[tuple[str, str, str, str], ...] = (
     ("卡 1：走正方形", "square", "后方和左侧各 1.5 米，前方和右侧各 0.5 米。", ""),
     ("卡 2：十字走位", "cross", "四周各 1 米。", ""),
     ("卡 4：能歌善舞", "singAndDance", "四周各 0.5 米。", ""),
+    (
+        "卡 6：瞄准红心",
+        "aimRedHeart",
+        "准备官方红心标签；四周各 0.5 米，标签方向无人；会发射红外。",
+        "",
+    ),
+    ("卡 9：回马枪", "backStrike", "四周各 0.5 米，后方无人；会向后发射红外。", ""),
+    ("卡 10：环绕扫射", "sweepFire", "四周各 0.5 米，周围无人；会环绕发射红外。", ""),
+    ("卡 11：摄像师 S1", "cameraOperator", "四周各 0.5 米；准备 SD 卡，底盘会原地转圈录像。", ""),
     ("卡 13：8 字形运动", "figureEight", "前后各 0.7 米、左右各 0.9 米。", ""),
+    (
+        "卡 14：云台方向跟随",
+        "gimbalSensor",
+        "前方 4 米、左右各 1.5 米、后方 0.5 米；同连接小角度转云台。",
+        "",
+    ),
     (
         "卡 16：云台角度控制",
         "motionControl",
@@ -30,11 +46,17 @@ CARDS: tuple[tuple[str, str, str, str], ...] = (
     ("卡 17：弹钢琴", "piano", "不移动机器人。", ""),
     ("卡 18：算数学题", "arithmetic", "不移动机器人。", ""),
     ("卡 19：向左转", "turnLeft", "四周各 0.5 米。", ""),
+    ("卡 21：阅兵", "parade", "前方 1.4 米、其他方向各 0.5 米。", ""),
+    ("卡 23：十连拍", "tenShots", "准备 SD 卡和可拍摄的场景；机器人不移动。", ""),
     ("卡 25：S 形倒退", "sReverse", "后方 1 米、左右各 0.6 米、前方 0.5 米。", ""),
     ("卡 28：标签演奏会", "markerConcert", "准备官方数字 1、2 标签；机器人不移动。", ""),
     ("卡 29：加速前进", "speedUp", "前方 5 米平整直道，其他方向各 0.5 米。", ""),
 )
 PRESETS: tuple[tuple[str, str, str, bool], ...] = (
+    ("拆弹倒计时", "bombSquad", "不移动机器人。", False),
+    ("太空发射中心", "spaceLaunch", "不移动机器人。", False),
+    ("路口协管员", "trafficOfficer", "四周各 0.5 米及上方无障碍。", False),
+    ("音乐洒水车", "musicSprinkler", "前方 1.6 米、其他方向各 0.5 米及上方无障碍。", True),
     ("好奇哨兵", "curiousSentry", "四周各 0.5 米及云台上方无障碍。", True),
     ("萤火虫花园", "fireflyGarden", "不移动机器人。", False),
     ("招财猫营业中", "luckyCat", "四周各 0.5 米及云台上方无障碍。", False),
@@ -43,7 +65,7 @@ PRESETS: tuple[tuple[str, str, str, bool], ...] = (
     ("环游小火车", "stationTrain", "前方和右侧各 0.7 米、后方和左侧各 0.5 米。", False),
     ("深夜铁板烧", "streetChef", "不移动机器人。", False),
     (
-        "周五狂欢舞（无音轨）",
+        "周五狂欢舞（带音轨）",
         "fridayDisco",
         "约 2 米×2 米空地；左侧至少 1 米，快速自转，远离人和易碎物。",
         True,
@@ -60,12 +82,47 @@ def function(source: str, name: str) -> str:
     return match.group(0)
 
 
+def embedded_soundtrack() -> str:
+    audio = (
+        ROOT.parent / "shared/src/commonMain/composeResources/files/presets/"
+        "friday_disco/audio/0_friday_night.opus"
+    ).read_bytes()
+    if audio.startswith(b"version https://git-lfs.github.com/"):
+        raise ValueError("soundtrack is an LFS pointer; run git lfs pull")
+    encoded = base64.b64encode(audio).decode("ascii")
+    literal = "\n".join(
+        '        "' + encoded[i : i + 1024] + '"' for i in range(0, len(encoded), 1024)
+    )
+    # Base64 keeps the complete standalone program within the runner's 256 KiB
+    # request limit. No runtime downloads, extra files or decoding dependency.
+    return (
+        """hanppie::Bytes classroomSoundtrack() {
+    const std::string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const char* encoded =
+"""
+        + literal
+        + """;
+    hanppie::Bytes audio;
+    unsigned value = 0;
+    int bits = 0;
+    for (const char* p = encoded; *p && *p != '='; ++p) {
+        const std::size_t digit = alphabet.find(*p);
+        if (digit == std::string::npos) throw std::runtime_error("invalid embedded audio");
+        value = (value << 6) | static_cast<unsigned>(digit);
+        bits += 6;
+        if (bits >= 8) { bits -= 8; audio.push_back((value >> bits) & 255); }
+    }
+    return audio;
+}
+hanppie::Bytes soundtrack = classroomSoundtrack();
+"""
+    )
+
+
 def wrap(
     name: str, clearance: str, prefix: str, body: str, recenter: bool = False, lights: bool = False
 ) -> str:
-    description = (
-        f"// {name}\n// 场地：{clearance}\n// 运行前关闭其他控制端；人须在旁，随时可断电。\n"
-    )
+    description = f"// {name}\n// 已由现场用户确认演示效果；场地要求见下方。\n// 场地：{clearance}\n// 运行前关闭其他控制端；人须在旁，随时可断电。\n"
     finish = "rm.led_ctrl.turn_off(rm_define::armor_all);" if lights else ""
     if recenter:
         finish += " rm.gimbal_ctrl.recenter();"
@@ -144,6 +201,20 @@ def examples() -> list[dict[str, str]]:
         )
     for title, fn, clearance, recenter in PRESETS:
         extra = "\n" + sound if fn == "fridayDisco" else ""
+        if fn == "musicSprinkler":
+            extra = (
+                "\nconst double PI = 3.14159265358979323846;\n"
+                + presets[
+                    presets.index("class YawSweep {") : presets.index("// Plays a length-prefixed")
+                ]
+            )
+            extra += "\n" + presets[presets.index("struct Note {") : presets.index("// 音乐洒水车")]
+        sample_helpers = helpers
+        if fn == "fridayDisco":
+            sample_helpers = helpers.replace(
+                "hanppie::Bytes soundtrack;  // encoded audio, loaded before connecting",
+                embedded_soundtrack(),
+            )
         samples.append(
             {
                 "name": title,
@@ -153,7 +224,7 @@ def examples() -> list[dict[str, str]]:
                     clearance,
                     preset_prefix
                     + "namespace {\n"
-                    + helpers
+                    + sample_helpers
                     + extra
                     + "\n"
                     + function(presets, fn)
