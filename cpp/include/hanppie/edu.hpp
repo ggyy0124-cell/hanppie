@@ -43,7 +43,9 @@ bool backward(double seconds);
 // Slide sideways without turning.
 bool left(double seconds);
 bool right(double seconds);
-// Turn on the spot by `degrees` (0 to MAX_DEGREES).
+// Turn on the spot by `degrees` (0 to MAX_DEGREES), adding to the logical
+// heading captured at connect(). Translation does not reset that target;
+// each completed turn corrects drift back to the accumulated heading.
 bool turnLeft(double degrees);
 bool turnRight(double degrees);
 bool stop();

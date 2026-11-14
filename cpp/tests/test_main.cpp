@@ -16,6 +16,7 @@
 #include "golden.hpp"
 #include "socket_compat.hpp"
 #include "test_support.hpp"
+#include "edu_heading.hpp"
 
 using namespace hanppie;
 using namespace hanppie::protocol;
@@ -423,6 +424,25 @@ TEST(build_lab_program_generates_valid_python_dsp) {
     LabProgramIdentity other;
     buildLabProgram("", other);
     CHECK(other.guid != identity.guid);
+}
+
+TEST(edu_heading_targets_do_not_accumulate_drift) {
+    for (int polarity = -1; polarity <= 1; polarity += 2) {
+        edu::detail::HeadingTarget target(170);
+        double actual = 170;
+        for (int side = 0; side < 4; ++side) {
+            const double next = target.next(90);
+            // Three degrees of translational drift plus a 0.8-degree turn residue.
+            actual += polarity * 93.8;
+            const double correction = target.correction(next, actual, polarity);
+            CHECK(std::fabs(correction + 3.8) < 1e-9);
+            actual += polarity * correction;
+            CHECK(std::fabs(ctrl::angleDifference(actual, 170 + polarity * (side + 1) * 90)) < 1e-9);
+            target.commit(next);
+        }
+        CHECK(std::fabs(ctrl::angleDifference(actual, 170)) < 1e-9);
+        CHECK(std::fabs(target.next(-360)) < 1e-9);
+    }
 }
 
 int main() { return test::runAll(); }

@@ -2,9 +2,9 @@
 
 `src/hanppie` Python 直控库的 C++11 移植：走 RoboMaster S1 出厂开放的 App 协议端口，提供 AppID 认领、App 会话、50 Hz 控制循环、底盘/云台/灯效/音效控制、遥测、音视频流和 Lab 脚本上传。连接序列、遥控模式进出表和灯效载荷与 Python 版逐字节比对；底盘和云台的运动路径以已在实机验证的 App（`packages/robot-core`）为准，与 Python 版不同，见下文「运动与安全」。两者不互相依赖。
 
-当前版本 **0.0.12**（`HANPPIE_VERSION`，定义在 `include/hanppie/hanppie.hpp`，CMake 项目版本从这里读取）。
+当前版本 **0.0.13**（`HANPPIE_VERSION`，定义在 `include/hanppie/hanppie.hpp`，CMake 项目版本从这里读取）。
 
-> 当前状态：离线单测和本机回环集成测试通过。运动指令载荷与 App 的测试向量逐字节一致，遥控模式进出表与 App 逐行核对一致。App 本身经过实机验证，但这份 C++ 实现的运动路径**尚未连接实机验证**。
+> 实机验证仅覆盖部分能力，范围与边界见[样例验证记录](../docs/records/device/cpp-samples-validation-2026-11-11.md)和[底盘转角修正记录](../docs/records/device/cpp-turn-validation-2026-11-14.md)。离线、回环测试和实机运行是不同证据层级。
 
 ## 与 Python 版的范围差异
 
@@ -105,20 +105,21 @@ int main() {
 | `connect()` / `disconnect()` / `connected()` | 自动找到机器人并连接 / 停车并断开 / 是否已连接 |
 | `forward(秒)` / `backward(秒)` | 前进 / 后退，0.3 m/s |
 | `left(秒)` / `right(秒)` | 向左 / 向右平移，不转向 |
-| `turnLeft(度)` / `turnRight(度)` | 原地左转 / 右转，60°/s |
+| `turnLeft(度)` / `turnRight(度)` | 原地左转 / 右转，60°/s；累加开局参考下的目标朝向 |
 | `stop()` / `beep()` / `wait(秒)` | 停车 / 响一声 / 程序暂停 |
 
 - **零配置连接**：`connect()` 监听机器人在局域网里的状态广播（UDP 45678），用广播中的地址和机器人已绑定的 AppID 连接，程序里不出现 IP 和 AppID，AppID 只留在内存中。机器人未绑定时随机生成一个。官方 App 的自动连接和 2026-11-06 的 S1 实机操作都用的是广播里的 AppID；已被其他程序连接的机器人可能不广播，此时会提示关闭其他控制程序后重试。
 - **安全边界**：速度固定为低速；单次移动和等待不超过 10 秒，单次转向不超过 360°，超出范围的调用不执行；每个动作结束、出错或程序正常结束时都会停车。Windows 上关闭控制台窗口或按 Ctrl+C、Linux 和 macOS 上收到 SIGINT（Ctrl+C）或 SIGTERM 时会尽量先停车，但这只是尽力而为：用任务管理器强制结束或断电时无法保证，机器人失去指令后的行为尚未实机验证。
 - **出错不抛异常**：函数返回 `false` 并在窗口打印一行英文提示（Dev-C++ 控制台使用系统代码页，中文提示会乱码）。
 - 距离与角度：移动按时间计算，不承诺精确距离；转向按机器人回传的姿态闭环控制。
+- **目标朝向**：连接后从稳定姿态建立参考，每次转向更新逻辑目标，平移不重置它。转向先完成指定方向和角度，再补偿到累计目标，减少前进偏航和逐角残差的积累；yaw 正负方向从实际转动中学习。手动重新摆放机器人后，用 `disconnect()` / `connect()` 重建参考。此行为属于 edu；ctrl 的 `rotate_with_degree` 仍以当前稳定朝向为起点。
 - 样例：[`examples/edu.cpp`](examples/edu.cpp)，构建后运行 `cpp/build/hanppie_edu`，不需要参数。
 
-以上只在模拟机器人上测试过，**尚未连接实机**。
+edu 示例的实机验证范围见[底盘转角修正记录](../docs/records/device/cpp-turn-validation-2026-11-14.md)。
 
 老师上课演示可以用 [课堂演示服务](classroom/README.md)：在 Ubuntu 上通过 HTTP 提交程序，服务编译运行并实时返回输出，可随时停止。
 
-网页提供 edu「前进、转弯」和「走正方形」两个入门示例，源码位于 [`examples/edu`](examples/edu)。这两个程序尚未实机验证，场地要求见代码注释；动作返回失败时停止后续步骤并断开连接。
+网页提供 edu「前进、转弯」和「走正方形」两个入门示例，源码位于 [`examples/edu`](examples/edu)。实机状态见[验证记录](../docs/records/device/cpp-turn-validation-2026-11-14.md)，场地要求见代码注释；动作返回失败时停止后续步骤并断开连接。
 
 ## 对外接口
 
@@ -183,6 +184,8 @@ using namespace hanppie::ctrl;
 与机内 Lab 的差异（远程运行导致）：
 
 - **转角度是电脑端闭环**：`rotate_with_degree`、`yaw_ctrl`、`pitch_ctrl`、`angle_ctrl`、`recenter` 根据 10 Hz 的云台遥测和底盘姿态遥测调整转速，增益与容差沿用 App 已验证的云台回中逻辑（每度 3°/s，容差 1°）。遥测中断超过 0.5 秒即停止并抛异常。
+- **底盘角度按净变化计算**：`rotate_with_degree` 先累计带符号的跨界角差，再取净转角的大小，避免回摆被计入进度。到达目标附近后先停车；连续 3 个新鲜样本变化不超过 0.25° 才判断是否需要小幅回调，最终误差在 1° 内才返回。该阈值基于遥测，不代表独立测量的物理精度。
+- C++ 辅助接口 `get_stable_heading()` 停车并读取稳定的底盘 yaw，`yaw_polarity()` 返回已由成功转向观测的方向约定（未知为 0）；供 edu 的目标朝向流程使用，不改变 Lab 相对转角语义。
 - **`move_with_distance` 是开环估算**：App 会话里没有经过验证的位置数据，按「距离 ÷ 速度」计时运行，误差明显大于 Lab。Lab 使用机内位置指令，该指令能否经 App 协议下发需要实机抓包确认。
 - **速度上限更低**：App 的遥控指令限制底盘 1 m/s、150°/s，云台 120°/s；超过的 Lab 取值会被截断，超出 Lab 自身范围的取值抛 `std::invalid_argument`。
 - **持续动作由后台线程续发**：`move`、`rotate` 等持续动作在 `RobotCtrl` 内每 50 ms 续租一次，直到 `stop()` 或析构；续租停止后 250 ms 租约到期，回到零速保持。进程被强杀或断网时的行为见上文「运动与安全」。
@@ -194,7 +197,7 @@ using namespace hanppie::ctrl;
 
 标签编号（红心 8、骰子 2、箭头 4–7、数字 10–19、字母 20–45）和姿态编号取自机内 Lab 源码 `rm_define.py`，机内 Lab 和 App 读的是同一条识别推送；其中数字和字母编号与 App 客户端的定义一致；所有编号都还没有实机确认。
 
-以上闭环与识别逻辑只在本机回环测试中用模拟机器人验证过，**未连接实机**。
+闭环与识别的实机覆盖范围以[样例记录](../docs/records/device/cpp-samples-validation-2026-11-11.md)及[转角修正记录](../docs/records/device/cpp-turn-validation-2026-11-14.md)为准，未列明的类别、角度和故障条件不视为已验证。
 
 ## 编程挑战卡示例
 

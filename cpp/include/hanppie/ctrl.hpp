@@ -163,7 +163,8 @@ struct MotionSetpoint {
 
 class ChassisCtrl {
 public:
-    explicit ChassisCtrl(RobotCtrl& rm) : rm_(rm), speed_(0.5), rotateSpeed_(30.0) {}
+    explicit ChassisCtrl(RobotCtrl& rm)
+        : rm_(rm), speed_(0.5), rotateSpeed_(30.0), yawPolarity_(0) {}
 
     void set_trans_speed(double speed);   // m/s, 0..1 (Lab allows 3.5)
     void set_rotate_speed(double speed);  // deg/s, 0..150 (Lab allows 600)
@@ -179,8 +180,14 @@ public:
     void rotate(int direction);
     void rotate_with_speed(int direction, double speed);
     void rotate_with_time(int direction, double seconds);
-    // Closed loop on chassis attitude yaw. Degrees 0..1800.
+    // Closed loop on net chassis yaw, correcting overshoot. Returns after three
+    // fresh, stable on-target samples; throws if telemetry or settling fails.
+    // Degrees 0..1800; target tolerance 1 degree, inter-sample movement <=0.25.
     void rotate_with_degree(int direction, double degree);
+    // C++ helpers for heading-referenced workflows. Native yaw polarity is
+    // learned from a completed turn: +1/-1 for clockwise yaw, 0 if unknown.
+    double get_stable_heading();  // stop chassis and wait for stable fresh yaw
+    int yaw_polarity() const { return yawPolarity_; }
     void move_and_rotate(double direction_angle, int direction);
 
     void stop();
@@ -192,6 +199,7 @@ private:
     RobotCtrl& rm_;
     double speed_;
     double rotateSpeed_;
+    int yawPolarity_;
 };
 
 class GimbalCtrl {

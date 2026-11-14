@@ -114,7 +114,9 @@ def examples() -> list[dict[str, str]]:
             {
                 "name": title,
                 "input": "",
-                "code": "// 尚未实机验证；场地和操作要求见下方注释。\n"
+                "code": "// 转角修正待完整实机复测；场地和操作要求见下方注释。\n"
+                "// 转向会在停车后确认姿态稳定，未能到位时结束程序并返回失败。\n"
+                "// edu 按开局朝向累计转向目标，下一次转向会补偿前进时的偏航。\n"
                 + source.replace('"hanppie/hanppie.hpp"', '"hanppie.h"'),
             }
         )

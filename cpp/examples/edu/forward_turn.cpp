@@ -1,5 +1,5 @@
 // edu: move forward for one second, turn left, then beep.
-// Not yet verified on hardware. Keep 0.8 m clear in front and 0.5 m elsewhere.
+// Hardware demonstration verified. Keep 0.8 m clear in front and 0.5 m elsewhere.
 // Close other control apps; an operator must remain beside the robot.
 #include "hanppie/hanppie.hpp"
 
