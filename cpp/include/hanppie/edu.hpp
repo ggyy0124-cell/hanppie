@@ -51,6 +51,8 @@ bool turnRight(double degrees);
 bool stop();
 // Short tone from the robot speaker.
 bool beep();
+// Set all armor LEDs to steady "white" or "red".
+bool setLight(const char* color);
 // Pause the program; the robot keeps still. The int overload keeps wait(0)
 // unambiguous next to POSIX wait(int*), which macOS <stdlib.h> declares.
 void wait(double seconds);

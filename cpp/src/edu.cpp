@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cmath>
+#include <cstring>
 #include <exception>
 #include <memory>
 #include <mutex>
@@ -227,6 +228,18 @@ bool stop() {
 bool beep() {
     return session().run("beep", [](ctrl::RobotCtrl& rm) {
         rm.media_ctrl.play_sound(ctrl::rm_define::media_sound_solmization_1A);
+    });
+}
+
+bool setLight(const char* color) {
+    const bool white = color && std::strcmp(color, "white") == 0;
+    if (!white && (!color || std::strcmp(color, "red") != 0)) {
+        report("setLight: use white or red");
+        return false;
+    }
+    return session().run("setLight", [&](ctrl::RobotCtrl& rm) {
+        const int greenAndBlue = white ? 255 : 0;
+        rm.robot.setLed("all", 255, greenAndBlue, greenAndBlue, "on");
     });
 }
 
