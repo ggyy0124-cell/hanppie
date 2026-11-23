@@ -66,6 +66,9 @@ int main() {
     Robot robot("192.168.2.1", "0123abcd");
     expect(!robot.connected(), "robot starts disconnected");
     expect(ctrl::rm_define::clockwise != ctrl::rm_define::anticlockwise, "Lab constants");
+    expect(!setLight("white"), "edu light requires a connection");
+    expect(!setLight("blue"), "edu light rejects unsupported names");
+    expect(!setLight(nullptr), "edu light rejects missing color");
     sleepSeconds(0.01);
 
     std::printf("Hanppie %s single header: %s\n", HANPPIE_VERSION, failures ? "FAILED" : "ok");
